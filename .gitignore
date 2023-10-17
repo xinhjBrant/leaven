@@ -1,0 +1,9 @@
+# mathlibs/*
+# elan/toolchains/*
+logs/
+elan/
+lean_gym/
+_target/
+proving_env_lib*
+__pycache__/
+*.pyc

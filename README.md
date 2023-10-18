@@ -1,4 +1,5 @@
-# LEAVEN: Bridging Python and Lean Verification through Interactive Interfaces and Code Editor Integration
+# LEAVEN: Bridging Python and Lean Verification for Proof Search using Language Models
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Introduction
 ### 1.1 Lean Theorem Prover at a Glance

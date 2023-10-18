@@ -94,7 +94,7 @@ agent.close()  # Ensure to close the agent post use
 ```
 
 # API Documentation
-For an in-depth understanding of usage, see `example.ipynb`.
+For an in-depth understanding of usage, see `leaven/example.ipynb`.
 
 # Advanced Features
 `ProvingSearchAgent` flourishes with its ability to attach custom annotations or metadata to search nodes, facilitated through the `**kwargs` argument in methods like `run_tac_raw` and `run_tac_plain`.

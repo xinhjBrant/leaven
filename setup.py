@@ -5,7 +5,6 @@ with open("README.md", "r") as f:
   long_description = f.read()
 
 setup(name='leaven',
-      packages= ['leaven'],
       version='0.0.0',
       license='MIT',
       description='A package bridging Python and Lean verification for proof search using language models',
@@ -17,7 +16,6 @@ setup(name='leaven',
       install_requires=[
         "networkx", "tarfile", "urllib", "zipfile", "pathlib", "platform", "datetime", "pytz", "shelve"
       ],
-      license='BSD License',
       packages=find_packages(),
       platforms=["all"],
       classifiers=[
@@ -27,4 +25,5 @@ setup(name='leaven',
           'Programming Language :: Python :: 3.9',
           'Topic :: Software Development :: Libraries'
       ],
+      python_requires='>=3.9',
       )

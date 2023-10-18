@@ -30,7 +30,7 @@ setup(name='leaven',
       install_requires=[
         "networkx", "tarfile", "urllib", "zipfile", "pathlib", "platform", "datetime", "pytz", "shelve"
       ],
-      packages=find_namespace_packages(),
+      packages=find_namespace_packages(exclude=['leaven.__pycache__', 'leaven.src.__pycache__']),
       include_package_data=True,
       platforms=["all"],
       classifiers=[

@@ -25,6 +25,9 @@ In light of these challenges, this project proposes a methodology that leverages
 ## Dependencies and Prerequisites
 The library is attuned to mathlib revision `58a272265b5e05f258161260dd2c5d247213cbd3`, albeit it may gel well with later versions.
 
+## Acknowledgements
+Part of the code in leaven/src/lean_server.py is adapted from https://github.com/leanprover-community/lean-client-python. This project uses trio to asynchronously listen to the Lean server, while I replaced the use of trio with simpler Python multithreading.
+
 ## Installation
 To install `leaven` and get all data files and dependencies, which may not be included in the GitHub repository, you should use the following command by default:
 

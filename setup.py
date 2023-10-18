@@ -40,6 +40,7 @@ setup(name='leaven',
           'Programming Language :: Python :: 3.9',
           'Topic :: Software Development :: Libraries'
       ],
+      long_description_content_type="text/markdown",
       python_requires='>=3.9',
       cmdclass={
           'install': PostInstallCommand,

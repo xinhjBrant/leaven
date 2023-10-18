@@ -32,6 +32,8 @@ To install `leaven` and get all data files and dependencies, which may not be in
 pip install leaven
 ```
 
+Or you can download the whole project from https://github.com/xinhjBrant/leaven/releases/download/release/leaven.tar.gz
+
 ## Components
 
 ### ProvingSearchAgent

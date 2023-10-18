@@ -1,1 +1,3 @@
 graft leaven
+prune leaven/__pycache__
+prune leaven/src/__pycache__

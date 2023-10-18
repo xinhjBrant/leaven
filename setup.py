@@ -1,5 +1,19 @@
 from distutils.core import setup
-from setuptools import find_packages
+from setuptools import find_namespace_packages, Command
+from leaven.src.lean_manager import get_lean
+
+class PostInstallCommand(Command):
+    description = "Run get_lean after installation"
+    user_options = []
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        get_lean()
 
 with open("README.md", "r") as f:
   long_description = f.read()
@@ -16,7 +30,8 @@ setup(name='leaven',
       install_requires=[
         "networkx", "tarfile", "urllib", "zipfile", "pathlib", "platform", "datetime", "pytz", "shelve"
       ],
-      packages=find_packages(),
+      packages=find_namespace_packages(),
+      include_package_data=True,
       platforms=["all"],
       classifiers=[
           'Intended Audience :: Developers',
@@ -26,4 +41,7 @@ setup(name='leaven',
           'Topic :: Software Development :: Libraries'
       ],
       python_requires='>=3.9',
+      cmdclass={
+          'install': PostInstallCommand,
+      },
       )

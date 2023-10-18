@@ -7,3 +7,6 @@ _target/
 proving_env_lib*
 __pycache__/
 *.pyc
+dist/
+leaven.egg-info/
+leaven-0.0.0/

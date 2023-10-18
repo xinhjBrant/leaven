@@ -5,7 +5,6 @@ import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
-import git
 
 def check_connection(url):
     try:
@@ -26,41 +25,6 @@ def extract_file(file):
     return file.parent / extracted_file
 
 def get_lean(version='3.51.1', remove_installation=True):
-    if os.path.exists(Path(__file__).resolve().parent.parent / 'elan' / 'toolchains' / f'leanprover-community--lean---{version}') or \
-        os.path.exists(Path(__file__).resolve().parent.parent / 'elan' / 'toolchains' / f'leanprover--lean4---{version}'):
-        print(f'Lean {version} exists')
-        return
-    if not check_connection(f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-windows.zip'):
-        raise Exception(f'Fail to connect to the URL: https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-windows.zip')
-    if version.startswith('3'):
-        if platform.system() == 'Windows':
-            url = f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-windows.zip'
-        elif platform.system() == 'Linux':
-            if platform.machine() == 'x86_64':
-                url = f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-linux.tar.gz'
-            elif platform.machine() == 'AArch64':
-                url = f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-linux_aarch64.tar.gz'
-            else:
-                raise ValueError('Unknown platform')
-        elif platform.system() == 'Darwin':
-            url = f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-darwin.zip'
-        else:
-            raise ValueError('Unknown platform')
-    else:
-        if platform.system() == 'Windows':
-            url = f'https://github.com/leanprover/lean4/releases/download/v{version}/lean-{version}-windows.zip'
-        elif platform.system() == 'Linux':
-            if platform.machine() == 'x86':
-                url = f'https://github.com/leanprover/lean4/releases/download/v{version}/lean-{version}-linux.tar.gz'
-            elif platform.machine() == 'AArch64':
-                url = f'https://github.com/leanprover/lean4/releases/download/v{version}/lean-{version}-linux_aarch64.tar.gz'
-        elif platform.system() == 'Darwin':
-            url = f'https://github.com/leanprover/lean4/releases/download/v{version}/lean-{version}-darwin.zip'
-        else:
-            raise ValueError('Unknown platform')
-    file = Path(__file__).resolve().parent.parent / os.path.basename(url)
-    with urllib.request.urlopen(url) as response, open(file, 'wb') as out_file:
-        shutil.copyfileobj(response, out_file)
     parent_path = Path(__file__).resolve().parent.parent
     if version.startswith('3'):
         toolchain = f'leanprover-community--lean---{version}'
@@ -68,11 +32,46 @@ def get_lean(version='3.51.1', remove_installation=True):
         toolchain = f'leanprover--lean4---{version}'
     toolchain_path = parent_path / 'elan' / 'toolchains' / toolchain
     bin_path = parent_path / 'elan' / 'bin' / 'elan'
-    extracted_file = extract_file(file)
-    shutil.move(extracted_file, toolchain_path)
+    if os.path.exists(Path(__file__).resolve().parent.parent / 'elan' / 'toolchains' / f'leanprover-community--lean---{version}') or \
+        os.path.exists(Path(__file__).resolve().parent.parent / 'elan' / 'toolchains' / f'leanprover--lean4---{version}'):
+        print(f'Lean {version} exists')
+    else:
+        if not check_connection(f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-windows.zip'):
+            raise Exception(f'Fail to connect to the URL: https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-windows.zip')
+        if version.startswith('3'):
+            if platform.system() == 'Windows':
+                url = f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-windows.zip'
+            elif platform.system() == 'Linux':
+                if platform.machine() == 'x86_64':
+                    url = f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-linux.tar.gz'
+                elif platform.machine() == 'AArch64':
+                    url = f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-linux_aarch64.tar.gz'
+                else:
+                    raise ValueError('Unknown platform')
+            elif platform.system() == 'Darwin':
+                url = f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-darwin.zip'
+            else:
+                raise ValueError('Unknown platform')
+        else:
+            if platform.system() == 'Windows':
+                url = f'https://github.com/leanprover/lean4/releases/download/v{version}/lean-{version}-windows.zip'
+            elif platform.system() == 'Linux':
+                if platform.machine() == 'x86':
+                    url = f'https://github.com/leanprover/lean4/releases/download/v{version}/lean-{version}-linux.tar.gz'
+                elif platform.machine() == 'AArch64':
+                    url = f'https://github.com/leanprover/lean4/releases/download/v{version}/lean-{version}-linux_aarch64.tar.gz'
+            elif platform.system() == 'Darwin':
+                url = f'https://github.com/leanprover/lean4/releases/download/v{version}/lean-{version}-darwin.zip'
+            else:
+                raise ValueError('Unknown platform')
+        file = Path(__file__).resolve().parent.parent / os.path.basename(url)
+        with urllib.request.urlopen(url) as response, open(file, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+        extracted_file = extract_file(file)
+        shutil.move(extracted_file, toolchain_path)
+        if remove_installation:
+            os.remove(file)
     assert os.system(f'{bin_path} toolchain link {toolchain} {toolchain_path}') == 0
-    if remove_installation:
-        os.remove(file)
 
 def download_mathlib(commit="58a272265b5e05f258161260dd2c5d247213cbd3"):
     os.system("git clone git@github.com:leanprover-community/mathlib.git _target/deps/mathlib")

@@ -26,7 +26,11 @@ In light of these challenges, this project proposes a methodology that leverages
 The library is attuned to mathlib revision `58a272265b5e05f258161260dd2c5d247213cbd3`, albeit it may gel well with later versions.
 
 ## Installation
-TODO: Elucidate installation steps.
+By default you should install by
+```
+pip install leaven
+python -c "from leaven.lean_manager import get_lean; get_lean()"
+```
 
 ## Components
 

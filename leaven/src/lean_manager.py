@@ -25,6 +25,42 @@ def extract_file(file):
             extracted_file = zip.namelist()[0]
     return file.parent / extracted_file
 
+def get_elan(version='3.0.0', remove_installation=True):
+    parent_path = Path(__file__).resolve().parent.parent
+    elan_path = parent_path / 'elan'
+    if os.path.exists(elan_path):
+        return
+    if not check_connection(f'https://github.com/leanprover/elan/releases/download/v3.0.0/elan-x86_64-pc-windows-msvc.zip'):
+        raise Exception(f'Fail to connect to the URL: https://github.com/leanprover/elan/releases/download/v3.0.0/elan-x86_64-pc-windows-msvc.zip')
+    if platform.system() == 'Windows':
+        url = f'https://github.com/leanprover/elan/releases/download/v{version}/elan-x86_64-pc-windows-msvc.zip'
+    elif platform.system() == 'Linux':
+        if platform.machine() == 'x86_64':
+            url = f'https://github.com/leanprover/elan/releases/download/v{version}/elan-x86_64-unknown-linux-gnu.tar.gz'
+        elif platform.machine() == 'AArch64':
+            url = f'https://github.com/leanprover/elan/releases/download/v{version}/elan-aarch64-unknown-linux-gnu.tar.gz'
+        else:
+            raise ValueError('Unknown platform')
+    elif platform.system() == 'Darwin':
+        if platform.machine() == 'x86_64':
+            url = f'https://github.com/leanprover/elan/releases/download/v{version}/elan-x86_64-apple-darwin.tar.gz'
+        elif platform.machine() == 'AArch64':
+            url = f'elan-aarch64-apple-darwin.tar.gz'
+        else:
+            raise ValueError('Unknown platform')
+    else:
+        raise ValueError('Unknown platform')
+    file = Path(__file__).resolve().parent.parent / os.path.basename(url)
+    with urllib.request.urlopen(url) as response, open(file, 'wb') as out_file:
+        shutil.copyfileobj(response, out_file)
+    extracted_file = extract_file(file)
+    assert os.system(f'{extracted_file} -y --no-modify-path --default-toolchain none') == 0
+    shutil.move(Path.home() / '.elan', elan_path)
+    os.makedirs(elan_path / 'toolchains', exist_ok=True)
+    if remove_installation:
+        os.remove(file)
+        os.remove(extracted_file)
+
 def get_lean(version='3.51.1', remove_installation=True):
     parent_path = Path(__file__).resolve().parent.parent
     if version.startswith('3'):

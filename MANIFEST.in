@@ -1,5 +1,7 @@
 graft leaven
+exclude leaven/proving_env_lib.bak
+exclude leaven/proving_env_lib.dat
+exclude leaven/proving_env_lib.dir
 prune leaven/__pycache__
 prune leaven/src/__pycache__
 prune leaven/_target
-prune leaven/proving_env_lib*

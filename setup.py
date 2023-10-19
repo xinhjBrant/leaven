@@ -1,6 +1,6 @@
 from distutils.core import setup
 from setuptools import find_namespace_packages, Command
-from leaven.src.lean_manager import get_lean
+from leaven.src.lean_manager import get_lean, download_mathlib_datasets
 
 class PostInstallCommand(Command):
     description = "Run get_lean after installation"
@@ -14,6 +14,7 @@ class PostInstallCommand(Command):
 
     def run(self):
         get_lean()
+        download_mathlib_datasets()
 
 with open("README.md", "r") as f:
   long_description = f.read()
@@ -28,7 +29,7 @@ setup(name='leaven',
       url='https://github.com/xinhjBrant/leaven',
       download_url = 'https://github.com/user/reponame/archive/v_01.tar.gz',
       install_requires=[
-        "networkx", "tarfile", "urllib", "zipfile", "pathlib", "platform", "datetime", "pytz", "shelve"
+        "networkx", "tarfile", "urllib", "zipfile", "pathlib", "platform", "datetime", "pytz", "shelve", "tqdm"
       ],
       packages=find_namespace_packages(exclude=['leaven.__pycache__', 'leaven.src.__pycache__']),
       include_package_data=True,

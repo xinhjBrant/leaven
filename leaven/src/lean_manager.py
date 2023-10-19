@@ -35,6 +35,8 @@ def get_lean(version='3.51.1', remove_installation=True):
     bin_path = parent_path / 'elan' / 'bin' / 'elan'
     if os.path.exists(Path(__file__).resolve().parent.parent / 'elan' / 'toolchains' / f'leanprover-community--lean---{version}') or \
         os.path.exists(Path(__file__).resolve().parent.parent / 'elan' / 'toolchains' / f'leanprover--lean4---{version}'):
+        assert os.system(f'{bin_path} toolchain link {toolchain} {toolchain_path}') == 0
+        assert os.system(f'{bin_path} default {toolchain}') == 0
         return
     if not check_connection(f'https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-windows.zip'):
         raise Exception(f'Fail to connect to the URL: https://github.com/leanprover-community/lean/releases/download/v{version}/lean-{version}-windows.zip')
@@ -72,6 +74,7 @@ def get_lean(version='3.51.1', remove_installation=True):
     if remove_installation:
         os.remove(file)
     assert os.system(f'{bin_path} toolchain link {toolchain} {toolchain_path}') == 0
+    assert os.system(f'{bin_path} default {toolchain}') == 0
 
 def get_mathlib_datasets(remove_installation=True):
     if os.path.exists(Path(__file__).resolve().parent.parent / '_target') and \

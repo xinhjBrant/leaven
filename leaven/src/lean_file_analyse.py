@@ -7,7 +7,7 @@ import re
 from leaven.src.lean_server import LeanEnv
 # import pickle
 import networkx as nx
-from file_tools import *
+from leaven.src.file_tools import *
 
 parent_path = Path(__file__).parent.parent.resolve()
 

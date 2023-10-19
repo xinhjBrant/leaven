@@ -11,3 +11,4 @@ dist/
 leaven.egg-info/
 leaven-0.0.0/
 build/
+upload*

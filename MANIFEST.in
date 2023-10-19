@@ -1,3 +1,5 @@
 graft leaven
 prune leaven/__pycache__
 prune leaven/src/__pycache__
+prune leaven/_target
+prune leaven/proving_env_lib*

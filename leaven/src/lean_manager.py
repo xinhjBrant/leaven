@@ -5,6 +5,7 @@ import tarfile
 import urllib.request
 import zipfile
 from pathlib import Path
+from tqdm import tqdm
 
 def check_connection(url):
     try:
@@ -72,6 +73,26 @@ def get_lean(version='3.51.1', remove_installation=True):
         if remove_installation:
             os.remove(file)
     assert os.system(f'{bin_path} toolchain link {toolchain} {toolchain_path}') == 0
+
+def download_mathlib_datasets(remove_installation=True):
+    url = 'https://github.com/xinhjBrant/leaven/releases/download/release/mathlib_dataset.tar.gz'
+    file_name = Path(__file__).resolve().parent.parent / os.path.basename(url)
+    with urllib.request.urlopen(url) as response, open(file_name, 'wb') as out_file:
+        total_size = int(response.headers.get('Content-Length', 0))
+        block_size = 1024
+        wrote = 0
+        with tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, miniters=1, desc=os.path.basename(url)) as progress:
+            while True:
+                buffer = response.read(block_size)
+                if not buffer:
+                    break
+                wrote += len(buffer)
+                out_file.write(buffer)
+                progress.update(len(buffer))
+    with tarfile.open(file_name, 'r:gz') as tar:
+        tar.extractall(Path(__file__).resolve().parent.parent)
+    if remove_installation:
+        os.remove(file_name)
 
 def download_mathlib(commit="58a272265b5e05f258161260dd2c5d247213cbd3"):
     os.system("git clone git@github.com:leanprover-community/mathlib.git _target/deps/mathlib")

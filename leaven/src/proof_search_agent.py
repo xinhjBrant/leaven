@@ -1,4 +1,4 @@
-from .lean_server import LeanEnv
+from leaven.src.lean_server import LeanEnv
 import shelve
 import re
 from pathlib import Path

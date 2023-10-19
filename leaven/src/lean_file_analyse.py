@@ -4,7 +4,7 @@ import subprocess
 import ujson as json
 # from tqdm import tqdm, trange
 import re
-from lean_server import LeanEnv
+from leaven.src.lean_server import LeanEnv
 # import pickle
 import networkx as nx
 from file_tools import *

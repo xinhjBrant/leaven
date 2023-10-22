@@ -717,12 +717,12 @@ class LeanEnv:
         :param file_content: the content of a .lean file to verify
         """
         events = self.step(options={"filename": filename, 'content': content})
-        error =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: {e.text}" for e in events if e.severity is Severity.error][ : 5])
-        warning =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: {e.text}" for e in events if e.severity is Severity.warning][ : 5])
-        info =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: {e.text}" for e in events if e.severity is Severity.information][ : 5])
+        error =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.error][ : 5])
+        warning =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.warning][ : 5])
+        info =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.information][ : 5])
         try:
             open_states, content = self.render_all(filename=filename, full_context=content) # get the local proof states for all keyword `sorry`
-            open_states = [f"line: {i[0]}, column: {i[1]}, proof state: {i[2]}" for i in open_states[ : 5] if i[2] is not None] # proof states attached with line and column
+            open_states = [f"line {i[0]}, column {i[1]}: \n{i[2]}" for i in open_states[ : 5] if i[2] is not None] # proof states attached with line and column
         except:
             assert error
             open_states = ''

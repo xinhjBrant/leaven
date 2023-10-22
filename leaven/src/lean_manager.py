@@ -18,11 +18,11 @@ def extract_file(file):
     if file.suffix == '.gz':
         with tarfile.open(file, 'r:gz') as tar:
             tar.extractall(file.parent)
-            extracted_file = tar.getnames()[0]
+            extracted_file = Path(tar.getnames()[0]).parts[0]
     else:
         with zipfile.ZipFile(file, 'r') as zip:
             zip.extractall(file.parent)
-            extracted_file = zip.namelist()[0]
+            extracted_file = Path(zip.namelist()[0]).parts[0]
     return file.parent / extracted_file
 
 def get_elan(version='3.0.0', remove_installation=True):
@@ -56,7 +56,6 @@ def get_elan(version='3.0.0', remove_installation=True):
     extracted_file = extract_file(file)
     assert os.system(f'{extracted_file} -y --no-modify-path --default-toolchain none') == 0
     shutil.move(Path.home() / '.elan', elan_path)
-    os.makedirs(elan_path / 'toolchains', exist_ok=True)
     if remove_installation:
         os.remove(file)
         os.remove(extracted_file)

@@ -23,6 +23,7 @@ class ProvingSearchAgent:
         self.server: Optional[LeanEnv] = None
         self.ordered_context: List[str] = []
         self.proving_envs: Optional[shelve.DbfilenameShelf] = None
+        self.init_context = None
 
     def __enter__(self) -> 'ProvingSearchAgent':
         """
@@ -86,7 +87,7 @@ class ProvingSearchAgent:
             raise ValueError('proving_envs_not_loaded')
         return self.proving_envs[name]
 
-    def _verify_lean_file(self, context: str, pre_lines: str = '', post_lines: str = '') -> Dict[str, Any]:
+    def _verify_lean_file(self, context: str, pre_lines: str = '', post_lines: str = '', **kwargs) -> Dict[str, Any]:
         """
         Verifies a Lean file and returns the verification result.
         
@@ -107,7 +108,7 @@ class ProvingSearchAgent:
         results.update({'core_context': core_context,
                         'pre_lines': pre_lines,
                         'post_lines': post_lines,
-                        'tactic_state_id': len(self.ordered_context) - 1})
+                        'tactic_state_id': len(self.ordered_context) - 1, **kwargs})
         self.search_history.add_node(results['context'], **{k : v for k, v in results.items() if k != 'context'})
         return results
     
@@ -145,7 +146,7 @@ class ProvingSearchAgent:
                 post_lines = node_props['post_lines']
         return pre_lines, post_lines
 
-    def init_search_raw(self, context: Optional[str] = None, filename: Optional[str] = None, pre_lines: str = '', post_lines: str = '') -> Dict[str, Any]:
+    def init_search_raw(self, context: Optional[str] = None, filename: Optional[str] = None, pre_lines: str = '', post_lines: str = '', **kwargs: Any) -> Dict[str, Any]:
         """
         Initializes a Raw Search using a custom Lean code context, and returns the verification result.
         
@@ -172,10 +173,11 @@ class ProvingSearchAgent:
             self.server.close()
         self.search_history = nx.DiGraph()
         self.server = LeanEnv()
-        results = self._verify_lean_file(context=context, pre_lines=pre_lines or '', post_lines=post_lines or '')
+        results = self._verify_lean_file(context=context, pre_lines=pre_lines or '', post_lines=post_lines or '', **kwargs)
+        self.init_context = results['context']
         return results
     
-    def init_search_plain(self, name: str) -> Dict[str, Any]:
+    def init_search_plain(self, name: str, **kwargs: Any) -> Dict[str, Any]:
         """
         Initializes a Plain Search using a specific theorem from mathlib, and returns the verification result.
         
@@ -186,9 +188,9 @@ class ProvingSearchAgent:
         The verification result of the given context.
         """
         pre_lines, init_context, post_lines = self.get_theorem_env(name)
-        return self.init_search_raw(context=init_context, pre_lines=pre_lines, post_lines=post_lines)
+        return self.init_search_raw(context=init_context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
     
-    def init_search_sequential(self, name: str) -> Dict[str, Any]:
+    def init_search_sequential(self, name: str, **kwargs: Any) -> Dict[str, Any]:
         """
         Initializes a Sequential Search, tailored for lean-gym tactic mode environment, using a specific theorem from 
         mathlib and returns the verification result.
@@ -201,7 +203,7 @@ class ProvingSearchAgent:
         """
         pre_lines, init_context, post_lines = self.get_theorem_env(name)
         context = re.sub(r'\bsorry\b', 'begin\n repeat { sorry } \nend', init_context)
-        return self.init_search_raw(context=context, pre_lines=pre_lines, post_lines=post_lines)
+        return self.init_search_raw(context=context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
     
     def run_tac_raw(self, context: str, pre_lines: str = '', post_lines: str = '', tactic_state_id: Optional[int] = None, **kwargs: Any) -> Dict[str, Any]:
         """
@@ -220,7 +222,7 @@ class ProvingSearchAgent:
         if tactic_state_id is None:
             tactic_state_id = self.get_context_id_to_expand()
         pre_lines, post_lines = self.get_context_properties(pre_lines, post_lines, tactic_state_id)
-        results = self._verify_lean_file(context=context, pre_lines=pre_lines, post_lines=post_lines)
+        results = self._verify_lean_file(context=context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
         results.update(kwargs)
         self.search_history.add_edge(self.ordered_context[tactic_state_id], results['context'], tactic=None)
         return results
@@ -241,7 +243,7 @@ class ProvingSearchAgent:
             tactic_state_id = self.get_context_id_to_expand()
         node_props = self.get_node_properties(tactic_state_id)
         pre_lines, post_lines = node_props['pre_lines'], node_props['post_lines']
-        pre_lines = '\n'.join([i for i in context.split('\n') if i.startswith('import')] + [pre_lines])
+        pre_lines = '\n'.join([i for i in context.split('\n') if i.startswith('import') and i not in pre_lines] + [pre_lines])
         context = '\n'.join(i for i in context.split('\n') if not i.startswith('import'))
         return self.run_tac_raw(context=context, pre_lines=pre_lines, post_lines=post_lines, tactic_state_id=tactic_state_id, **kwargs)
 
@@ -265,6 +267,31 @@ class ProvingSearchAgent:
         assert len(sorry_pos) == 1
         context = context_to_expand[:sorry_pos[0][0]] + tactic.rstrip(', ') + ',  repeat { sorry } ' + context_to_expand[sorry_pos[0][1]:]
         return self.run_tac_raw(context=context, tactic_state_id=tactic_state_id, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
+    
+    def get_path_to_context(self, context: str) -> List[int]:
+        """
+        Returns the path from the root node to the node corresponding to the given context.
+
+        Parameters:
+        context: The context of the node to find.
+
+        Returns:
+        A list of node IDs representing the path from the root node to the node corresponding to the given context.
+        """
+        path = nx.shortest_path(self.search_history, source=self.init_context, target=context)
+        return [self.search_history.nodes[p] for p in path]
+    
+    def get_path_to_context_id(self, tactic_state_id: int) -> List[int]:
+        """
+        Returns the path from the root node to the node corresponding to the given tactic_state_id.
+
+        Parameters:
+        tactic_state_id: The ID of the tactic state.
+
+        Returns:
+        A list of node IDs representing the path from the root node to the node corresponding to the given tactic_state_id.
+        """
+        return self.get_path_to_context(self.ordered_context[tactic_state_id])
     
     def get_context_id_to_expand(self) -> int:
         """

@@ -681,24 +681,52 @@ class LeanEnv:
         options: dict):
         return self.lean_server.state(**options)
     
+    @staticmethod
+    def find_positions(match, s):
+        start_pos = match.start()
+        end_pos = match.end()
+        
+        # compute start and end line and column
+        start_line = s.count('\n', 0, start_pos) + 1
+        start_col = start_pos - s.rfind('\n', 0, start_pos) - 1  # 列数从0开始
+        
+        # compute end line and column
+        end_line = s.count('\n', 0, end_pos) + 1
+        end_col = end_pos - s.rfind('\n', 0, end_pos) - 1  # 列数从0开始
+
+        positions = []
+
+        for line in range(start_line, end_line + 1):
+            if line == start_line and line == end_line:
+                for col in range(start_col, end_col + 1):
+                    positions.append((line, col))
+            elif line == start_line:
+                positions.extend([(line, col) for col in range(start_col, len(s.split('\n')[line - 1]))])
+            elif line == end_line:
+                positions.extend([(line, col) for col in range(end_col + 1)])
+            else:
+                positions.extend([(line, col) for col in range(len(s.split('\n')[line - 1]))])
+        
+        return positions
+    
     def render_all(self, filename, full_context, again=False, context_to_check=None):
         checking_start = full_context.find(context_to_check) if context_to_check is not None else -1
         decl_text = full_context
         outputs = []
         search_flag = checking_start if checking_start != -1 else 0
-        pattern = re.compile(r'\bsorry\b')
+        pattern = re.compile(r'\bsorry\b\s*')
         while search := pattern.search(full_context, search_flag, (checking_start + len(context_to_check)) if checking_start != -1 else sys.maxsize):
-            output = ''
+            output = None
             search_flag = search.end()
-            splited_prefix = full_context[ : search.start()].split('\n')
-            for step in range(len(search.group(0).split(search.group(0).strip())[0]), len(search.group(0))):
-                if output := self.render(options={"filename" : filename, "line" : len(splited_prefix), "col" : len(splited_prefix[-1]) + step}):
-                    if output == 'no goals':
+            positions = self.find_positions(search, full_context)
+            for pos in positions:
+                if (output := self.render(options={"filename" : filename, "line" : pos[0], "col" : pos[1]})) and output.state:
+                    if output.state == 'no goals':
                         decl_text = full_context[ : search.start()] + full_context[search.end() : ]
                     else:
-                        outputs.append((len(splited_prefix), len(splited_prefix[-1]) + step, output.state))
+                        outputs.append((pos[0], pos[1], output.state))
                     break
-            if not output:
+            if output is None:
                 if not again:
                     self.reset(options={"filename": filename, "content": full_context})
                     return self.render_all(filename, full_context, True)

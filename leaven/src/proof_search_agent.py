@@ -16,30 +16,32 @@ class ProvingSearchAgent:
 
     def __init__(self) -> None:
         """
-        Initializes the ProvingSearchAgent, setting up a server connection and preparing for theorem proving tasks.
-        It also initializes necessary data structures to keep track of the proving process.
+        Initializes the ProvingSearchAgent by setting up data structures to keep track of the 
+        proving process, but without establishing any connections yet.
         """
         self.search_history: nx.DiGraph = nx.DiGraph()
         self.server: Optional[LeanEnv] = None
-        self.ordered_context: List[str] = []
         self.proving_envs: Optional[shelve.DbfilenameShelf] = None
         self.init_context = None
 
     def __enter__(self) -> 'ProvingSearchAgent':
         """
-        Enters a runtime context related to the ProvingSearchAgent instance.
+        Facilitates the usage of the ProvingSearchAgent instance in a 'with' context. This
+        method returns the instance itself.
         """
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         """
-        Handles exit from the runtime context, ensuring resources are properly released.
+        Ensures that all resources (server connection and shelve file) are properly released when 
+        exiting the 'with' context.
         """
         self.close()
 
     def close(self) -> None:
         """
-        Closes the server connection and releases any other resources held by the ProvingSearchAgent instance.
+        Releases all resources held by the ProvingSearchAgent instance, including server 
+        connections and shelve file connections.
         """
         if self.server is not None:
             self.server.close()
@@ -48,98 +50,80 @@ class ProvingSearchAgent:
             self.proving_envs.close()
             self.proving_envs = None
 
-    def load_proving_envs(self) -> None:
+    def open_proving_envs(self) -> None:
         """
-        Loads the proving environments from a shelve file named 'proving_env_lib', which contains theorems from mathlib with necessary pre and post context for proving. Ensure the shelve file is located at the specified path, else an exception will be thrown.
+        Opens a shelve file named 'proving_env_lib' which contains pre-defined theorem 
+        environments. This is necessary for accessing the theorem environments stored 
+        in this file.
         """
         self.proving_envs = shelve.open(str(PROVING_ENV_PATH))
 
+    def close_proving_envs(self) -> None:
+        """
+        Closes the proving environments shelve file, if it's open. This ensures that no 
+        resources are wasted.
+        """
+        if self.proving_envs is not None:
+            self.proving_envs.close()
+            self.proving_envs = None
+
     def add_theorem_env(self, name: str, init_context: str, pre_lines: str = '', post_lines: str = '') -> None:
         """
-        Adds a theorem environment to the shelve file, providing a way to extend the set of theorems available for proving.
+        Stores a theorem environment in the shelve file. This allows the user to add new 
+        theorem environments which can be used later in the proving process.
         
-        Parameters:
-        name: The name of the theorem.
-        init_context: The initial context of the theorem.
-        pre_lines: Any necessary lines of code before the theorem. Defaults to ''.
-        post_lines: Any necessary lines of code after the theorem. Defaults to ''.
-
         Raises:
-            ValueError: If the name already exists in the proving environments.
+            ValueError: If a theorem with the same name already exists in the proving environments.
         """
         if self.proving_envs is None:
-            raise ValueError('proving_envs_not_loaded')
-        if name in self.proving_envs:
-            raise ValueError(f'{name} already exists in proving environments')
-        self.proving_envs[name] = (pre_lines, init_context, post_lines)
+            with shelve.open(str(PROVING_ENV_PATH)) as proving_envs:
+                if name in proving_envs:
+                    raise ValueError(f'{name} already exists in proving environments')
+                proving_envs[name] = (pre_lines, init_context, post_lines)
+        else:
+            if name in self.proving_envs:
+                raise ValueError(f'{name} already exists in proving environments')
+            self.proving_envs[name] = (pre_lines, init_context, post_lines)
 
     def get_theorem_env(self, name: str) -> Tuple[str, str, str]:
         """
-        Retrieves the specified theorem environment from the shelve file.
-        
-        Parameters:
-        name: The name of the theorem.
-        
-        Returns:
-        A tuple containing pre_lines, init_context, and post_lines of the specified theorem.
+        Retrieves the theorem environment for a given theorem name from the shelve file. This 
+        theorem environment includes any necessary lines of code before and after the theorem 
+        itself, as well as the theorem's context.
         """
         if self.proving_envs is None:
-            raise ValueError('proving_envs_not_loaded')
+            with shelve.open(str(PROVING_ENV_PATH)) as proving_envs:
+                return proving_envs[name]
         return self.proving_envs[name]
 
     def _verify_lean_file(self, context: str, pre_lines: str = '', post_lines: str = '', **kwargs) -> Dict[str, Any]:
         """
-        Verifies a Lean file and returns the verification result.
-        
-        Parameters:
-        context: The Lean code context.
-        pre_lines: Any necessary lines of code before the context. Defaults to ''.
-        post_lines: Any necessary lines of code after the context. Defaults to ''.
+        Sends the provided Lean code context to the Lean server for verification. This internal 
+        method also keeps track of the verification results in the search history graph.
         
         Returns:
-        The verification result of the given context.
+            A dictionary containing the verification results.
         """
         if self.server is None:
             self.server = LeanEnv()
         results = self.server.verify_lean_file(pre_lines + context + post_lines)
-        self.ordered_context = [i for i in self.ordered_context if i != results['context']] + [results['context']]
         assert pre_lines in results['context'] and post_lines in results['context']
         core_context = results['context'][len(pre_lines):-len(post_lines) if len(post_lines) > 0 else len(results['context'])]
         results.update({'core_context': core_context,
                         'pre_lines': pre_lines,
                         'post_lines': post_lines,
-                        'tactic_state_id': len(self.ordered_context) - 1, **kwargs})
+                        **kwargs})
         self.search_history.add_node(results['context'], **{k : v for k, v in results.items() if k != 'context'})
         return results
     
-    def get_node_properties(self, tactic_state_id: int) -> Dict[str, Any]:
+    def get_context_properties(self, pre_lines: str, post_lines: str, last_context: str) -> Tuple[str, str]:
         """
-        Returns the pre_lines and core_context properties of the node corresponding to the given tactic_state_id.
-        
-        Parameters:
-        tactic_state_id: The ID of the tactic state.
-        
-        Returns:
-        A dictionary containing the pre_lines and core_context properties of the node.
-        """
-        node = self.search_history.nodes[self.ordered_context[tactic_state_id]]
-        return {'pre_lines': node['pre_lines'], 'core_context': node['core_context'], 'post_lines': node['post_lines']}
-    
-    def get_context_properties(self, pre_lines: Optional[str], post_lines: Optional[str], tactic_state_id: int) -> Tuple[str, str]:
-        """
-        Returns the pre_lines and post_lines properties of the node corresponding to the given tactic_state_id.
-        If pre_lines or post_lines is None, retrieves the properties from the node using get_node_properties.
-        
-        Parameters:
-        pre_lines: Any necessary lines of code before the context. Defaults to None.
-        post_lines: Any necessary lines of code after the context. Defaults to None.
-        tactic_state_id: The ID of the tactic state.
-        
-        Returns:
-        A tuple containing the pre_lines and post_lines properties of the node.
+        Retrieves the pre-lines and post-lines associated with a particular tactic state in the 
+        search history. This is useful when applying tactics to ensure that the context is 
+        correctly structured.
         """
         if pre_lines is None or post_lines is None:
-            node_props = self.get_node_properties(tactic_state_id)
+            node_props = self.search_history.nodes[last_context]
             if pre_lines is None:
                 pre_lines = node_props['pre_lines']
             if post_lines is None:
@@ -148,19 +132,11 @@ class ProvingSearchAgent:
 
     def init_search_raw(self, context: Optional[str] = None, filename: Optional[str] = None, pre_lines: str = '', post_lines: str = '', **kwargs: Any) -> Dict[str, Any]:
         """
-        Initializes a Raw Search using a custom Lean code context, and returns the verification result.
+        Initializes a Raw Search by using a custom Lean code context or reading from a specified 
+        file. This search is not dependent on the theorem environments in the shelve file.
         
-        Parameters:
-        context: The custom Lean code to be used as context. Defaults to None.
-        filename: The file name containing Lean code if context is not provided. Defaults to None.
-        pre_lines: Any necessary lines of code before the context. Defaults to ''.
-        post_lines: Any necessary lines of code after the context. Defaults to ''.
-        
-        Returns:
-        The verification result of the given context.
-
         Raises:
-            ValueError: If both context and filename are None, or if the file specified by filename does not exist.
+            ValueError: If both context and filename are not provided or the specified file does not exist.
         """
         if context is None:
             if filename is not None:
@@ -179,134 +155,80 @@ class ProvingSearchAgent:
     
     def init_search_plain(self, name: str, **kwargs: Any) -> Dict[str, Any]:
         """
-        Initializes a Plain Search using a specific theorem from mathlib, and returns the verification result.
-        
-        Parameters:
-        name: The name of the theorem from mathlib.
-        
-        Returns:
-        The verification result of the given context.
+        Initializes a Plain Search by using a theorem name from the shelve file. This search 
+        directly uses the theorem's environment without any modifications.
         """
         pre_lines, init_context, post_lines = self.get_theorem_env(name)
         return self.init_search_raw(context=init_context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
     
     def init_search_sequential(self, name: str, **kwargs: Any) -> Dict[str, Any]:
         """
-        Initializes a Sequential Search, tailored for lean-gym tactic mode environment, using a specific theorem from 
-        mathlib and returns the verification result.
-        
-        Parameters:
-        name: The name of the theorem from mathlib.
-        
-        Returns:
-        The verification result of the given context.
+        Initializes a Sequential Search. This mode is tailored for the lean-gym tactic mode 
+        environment. It starts with a theorem from the shelve file and sequentially modifies 
+        the proof context.
         """
         pre_lines, init_context, post_lines = self.get_theorem_env(name)
         context = re.sub(r'\bsorry\b', 'begin\n repeat { sorry } \nend', init_context)
         return self.init_search_raw(context=context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
     
-    def run_tac_raw(self, context: str, pre_lines: str = '', post_lines: str = '', tactic_state_id: Optional[int] = None, **kwargs: Any) -> Dict[str, Any]:
+    def run_tac_raw(self, context: str, last_context: str, pre_lines: str = '', post_lines: str = '', **kwargs: Any) -> Dict[str, Any]:
         """
-        Modifies the context using a tactic in Raw Search mode and returns the verification result.
-        
-        Parameters:
-        context: The Lean code context.
-        pre_lines: Any necessary lines of code before the context. Defaults to ''.
-        post_lines: Any necessary lines of code after the context. Defaults to ''.
-        tactic_state_id: The ID of the tactic state to expand. Defaults to None.
-        **kwargs: Additional parameters.
+        In Raw Search mode, this method modifies the current Lean context by applying a user-provided 
+        tactic. The result of this modification is then sent for verification.
         
         Returns:
-        The verification result of the modified context.
+            The verification result of the modified context.
         """
-        if tactic_state_id is None:
-            tactic_state_id = self.get_context_id_to_expand()
-        pre_lines, post_lines = self.get_context_properties(pre_lines, post_lines, tactic_state_id)
+        pre_lines, post_lines = self.get_context_properties(pre_lines, post_lines, last_context)
         results = self._verify_lean_file(context=context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
         results.update(kwargs)
-        self.search_history.add_edge(self.ordered_context[tactic_state_id], results['context'], tactic=None)
+        self.search_history.add_edge(last_context, results['context'], tactic=None)
         return results
     
-    def run_tac_plain(self, context: str, tactic_state_id: Optional[int] = None, **kwargs: Any) -> Dict[str, Any]:
+    def run_tac_plain(self, context: str, last_context: str, **kwargs: Any) -> Dict[str, Any]:
         """
-        Modifies the context using a tactic in Plain Search mode and returns the verification result.
-        
-        Parameters:
-        context: The Lean code context.
-        tactic_state_id: The ID of the tactic state to expand. Defaults to None.
-        **kwargs: Additional parameters.
+        In Plain Search mode, this method modifies the current Lean context by applying a user-provided 
+        tactic. Unlike Raw Search, this method handles the importing of necessary modules.
         
         Returns:
-        The verification result of the modified context.
+            The verification result of the modified context.
         """
-        if tactic_state_id is None:
-            tactic_state_id = self.get_context_id_to_expand()
-        node_props = self.get_node_properties(tactic_state_id)
+        node_props = self.search_history.nodes[last_context]
         pre_lines, post_lines = node_props['pre_lines'], node_props['post_lines']
         pre_lines = '\n'.join([i for i in context.split('\n') if i.startswith('import') and i not in pre_lines] + [pre_lines])
         context = '\n'.join(i for i in context.split('\n') if not i.startswith('import'))
-        return self.run_tac_raw(context=context, pre_lines=pre_lines, post_lines=post_lines, tactic_state_id=tactic_state_id, **kwargs)
+        return self.run_tac_raw(context=context, last_context=last_context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
 
-    def run_tac_sequential(self, tactic: str, tactic_state_id: Optional[int] = None, **kwargs: Any) -> Dict[str, Any]:
+    def run_tac_sequential(self, tactic: str, last_context: str, **kwargs: Any) -> Dict[str, Any]:
         """
-        Executes a tactic in Sequential Search mode, modifying the proof context sequentially and returns the verification result.
-        
-        Parameters:
-        tactic: The tactic to be applied.
-        tactic_state_id: The ID of the tactic state to expand. Defaults to None.
-        **kwargs: Additional parameters.
+        In Sequential Search mode, applies a specified tactic to the current context. The modified 
+        context is then sent for verification, allowing users to build proofs step-by-step.
         
         Returns:
-        The verification result of the modified context.
+            The verification result of the modified context.
         """
-        if tactic_state_id is None:
-            tactic_state_id = self.get_context_id_to_expand()
-        node_props = self.get_node_properties(tactic_state_id)
+        node_props = self.search_history.nodes[last_context]
         pre_lines, context_to_expand, post_lines = node_props['pre_lines'], node_props['core_context'], node_props['post_lines']
         sorry_pos = [i.span() for i in re.finditer(r'\brepeat { sorry }', context_to_expand)]
         assert len(sorry_pos) == 1
         context = context_to_expand[:sorry_pos[0][0]] + tactic.rstrip(', ') + ',  repeat { sorry } ' + context_to_expand[sorry_pos[0][1]:]
-        return self.run_tac_raw(context=context, tactic_state_id=tactic_state_id, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
+        return self.run_tac_raw(context=context, last_context=last_context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
     
     def get_path_to_context(self, context: str) -> List[int]:
         """
-        Returns the path from the root node to the node corresponding to the given context.
-
-        Parameters:
-        context: The context of the node to find.
-
-        Returns:
-        A list of node IDs representing the path from the root node to the node corresponding to the given context.
+        Returns a sequence of node identifiers, representing the path from the root of the search 
+        history graph to a given context.
         """
         path = nx.shortest_path(self.search_history, source=self.init_context, target=context)
         return [self.search_history.nodes[p] for p in path]
     
-    def get_path_to_context_id(self, tactic_state_id: int) -> List[int]:
-        """
-        Returns the path from the root node to the node corresponding to the given tactic_state_id.
-
-        Parameters:
-        tactic_state_id: The ID of the tactic state.
-
-        Returns:
-        A list of node IDs representing the path from the root node to the node corresponding to the given tactic_state_id.
-        """
-        return self.get_path_to_context(self.ordered_context[tactic_state_id])
-    
-    def get_context_id_to_expand(self) -> int:
-        """
-        Determines the ID of the context to expand. This is used internally to manage the order of proof steps.
-        The method returns the index of the last context in the ordered list of contexts.
-
-        Returns:
-            The ID of the context to expand.
-        """
-        return len(self.ordered_context) - 1
+    def get_context_to_expand(self):
+        pass
 
 def add_mathlib_data():
     from tqdm import tqdm
     agent = ProvingSearchAgent()
-    agent.load_proving_envs()
+    agent.open_proving_envs()
     from pathlib import Path
     import json
     for p in tqdm(list((Path(__file__).resolve().parent.parent.parent / 'dataset_temp').glob('**/*.json'))):
@@ -318,7 +240,7 @@ def add_mathlib_data():
 
 def add_minif2f_data():
     agent = ProvingSearchAgent()
-    agent.load_proving_envs()
+    agent.open_proving_envs()
     from pathlib import Path
     from tqdm import tqdm
     import json

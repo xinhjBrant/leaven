@@ -712,9 +712,9 @@ class LeanEnv:
     def render_all(self, filename, full_context, again=False, context_to_check=None):
         checking_start = full_context.find(context_to_check) if context_to_check is not None else -1
         decl_text = full_context
-        outputs = []
+        outputs = None
         search_flag = checking_start if checking_start != -1 else 0
-        pattern = re.compile(r'\bsorry\b\s*')
+        pattern = re.compile(r'\s*repeat\s*\{\s*sorry\b|\s*\bsorry\b')
         while search := pattern.search(full_context, search_flag, (checking_start + len(context_to_check)) if checking_start != -1 else sys.maxsize):
             output = None
             search_flag = search.end()
@@ -722,7 +722,11 @@ class LeanEnv:
             for pos in positions:
                 if (output := self.render(options={"filename" : filename, "line" : pos[0], "col" : pos[1]})) and output.state:
                     if output.state == 'no goals':
-                        decl_text = full_context[ : search.start()] + full_context[search.end() : ]
+                        # decl_text = full_context[ : search.start()] + full_context[search.end() : ]
+                        if outputs is None:
+                            outputs = []
+                    elif outputs is None:
+                        outputs = [(pos[0], pos[1], output.state)]
                     else:
                         outputs.append((pos[0], pos[1], output.state))
                     break
@@ -732,7 +736,7 @@ class LeanEnv:
                     return self.render_all(filename, full_context, True)
                 else:
                     raise ValueError('sorrys_returned_no_info')
-            assert outputs
+            assert outputs is not None
         return outputs, decl_text
 
     def close(self):
@@ -750,10 +754,10 @@ class LeanEnv:
         info =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.information][ : 5])
         try:
             open_states, content = self.render_all(filename=filename, full_context=content) # get the local proof states for all keyword `sorry`
-            open_states = [f"line {i[0]}, column {i[1]}: \n{i[2]}" for i in open_states[ : 5] if i[2] is not None] # proof states attached with line and column
-        except:
+            open_states = [f"line {i[0]}, column {i[1]}: \n{i[2]}" for i in open_states[ : 5] if i[2] is not None] if open_states is not None else [] # proof states attached with line and column
+        except Exception as e:
             assert error
-            open_states = ''
+            open_states = []
         return {
             'error' : error, 'warning' : warning, 'info' : info, 'open_states' : open_states, 'context' : content
         }

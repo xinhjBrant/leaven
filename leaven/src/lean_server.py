@@ -19,6 +19,8 @@ from leaven.src.file_tools import *
 
 parent_path = Path(__file__).parent.parent.resolve()
 
+
+
 def dict_to_dataclass(cls, dic: dict):
     dic = {k: dic[k] for k in cls.__dataclass_fields__ if k in dic}
     return cls(**dic)
@@ -611,6 +613,12 @@ class LeanServerMonitor:
         if self.process is None:
             return False
         return self.process.is_running()
+    
+class LeanServerNoInfoError(Exception):
+    """
+    Raised when the Lean server returns no information.
+    """
+    pass
 
 class LeanEnv:
     def __init__(
@@ -658,7 +666,7 @@ class LeanEnv:
 
         self.reset_options = options
         
-        if self.lean_server and self.lean_file_paths:
+        if self.lean_server:
             self.lean_server.stop()
             del self.lean_server
             self.lean_server = None
@@ -707,14 +715,14 @@ class LeanEnv:
             else:
                 positions.extend([(line, col) for col in range(len(s.split('\n')[line - 1]))])
         
-        return positions
+        return positions[:-1]
     
     def render_all(self, filename, full_context, again=False, context_to_check=None):
         checking_start = full_context.find(context_to_check) if context_to_check is not None else -1
         decl_text = full_context
         outputs = None
         search_flag = checking_start if checking_start != -1 else 0
-        pattern = re.compile(r'\s*repeat\s*\{\s*sorry\b|\s*\bsorry\b')
+        pattern = re.compile(r'\s*repeat\s*\{\s*sorry\b|by\s+sorry\b|\s*\bsorry\b')
         while search := pattern.search(full_context, search_flag, (checking_start + len(context_to_check)) if checking_start != -1 else sys.maxsize):
             output = None
             search_flag = search.end()
@@ -730,13 +738,13 @@ class LeanEnv:
                     else:
                         outputs.append((pos[0], pos[1], output.state))
                     break
-            if output is None:
+            if output.state is None:
                 if not again:
                     self.reset(options={"filename": filename, "content": full_context})
                     return self.render_all(filename, full_context, True)
                 else:
-                    raise ValueError('sorrys_returned_no_info')
-            assert outputs is not None
+                    raise LeanServerNoInfoError(f"Lean server returns no information at line {pos[0]}, column {pos[1]} in the following content:\n{full_context}")
+            assert outputs is not None, full_context
         return outputs, decl_text
 
     def close(self):
@@ -756,7 +764,8 @@ class LeanEnv:
             open_states, content = self.render_all(filename=filename, full_context=content) # get the local proof states for all keyword `sorry`
             open_states = [f"line {i[0]}, column {i[1]}: \n{i[2]}" for i in open_states[ : 5] if i[2] is not None] if open_states is not None else [] # proof states attached with line and column
         except Exception as e:
-            assert error
+            if not error:
+                raise e
             open_states = []
         return {
             'error' : error, 'warning' : warning, 'info' : info, 'open_states' : open_states, 'context' : content

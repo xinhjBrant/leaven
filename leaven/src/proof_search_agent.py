@@ -159,6 +159,8 @@ class ProvingSearchAgent:
         directly uses the theorem's environment without any modifications.
         """
         pre_lines, init_context, post_lines = self.get_theorem_env(name)
+        pre_lines = '\n'.join([i for i in init_context.split('\n') if i.startswith('import') and i not in pre_lines] + [pre_lines])
+        init_context = '\n'.join(i for i in init_context.split('\n') if not i.startswith('import'))
         return self.init_search_raw(context=init_context, pre_lines=pre_lines, post_lines=post_lines, **kwargs)
     
     def init_search_sequential(self, name: str, **kwargs: Any) -> Dict[str, Any]:

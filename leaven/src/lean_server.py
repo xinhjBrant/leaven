@@ -738,7 +738,7 @@ class LeanEnv:
                     else:
                         outputs.append((pos[0], pos[1], output.state))
                     break
-            if output.state is None:
+            if not output or output.state is None: # not output means: is None or is an empty string
                 if not again:
                     self.reset(options={"filename": filename, "content": full_context})
                     return self.render_all(filename, full_context, True)

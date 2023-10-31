@@ -9,7 +9,8 @@ from leaven.src.lean_server import LeanEnv
 import networkx as nx
 from leaven.src.file_tools import *
 
-parent_path = Path(__file__).parent.parent.resolve()
+leaven_path = Path(__file__).parent.parent.resolve()
+src_path = Path(__file__).parent.resolve()
 
 def get_name_from_leanpkg_path(p: Path) -> str:
   """ get the package name corresponding to a source path """
@@ -20,7 +21,7 @@ def get_name_from_leanpkg_path(p: Path) -> str:
     return "core"
   return '<unknown>'
 
-lean_path_basis = [Path(p) for p in json.loads(subprocess.check_output([f_join(parent_path, 'elan', 'bin', 'lean'), '--path']).decode())['path']]
+lean_path_basis = [Path(p) for p in json.loads(subprocess.check_output([f_join(leaven_path, 'elan', 'bin', 'lean'), '--path'], cwd=leaven_path).decode())['path']]
 path_info = [(p.resolve(), get_name_from_leanpkg_path(p)) for p in lean_path_basis]
 lean_paths = [p.resolve() for p in lean_path_basis if p.exists()]
 
@@ -212,7 +213,7 @@ class Rule:
 class Tokenizer:
     @classmethod
     def parsing_declarations(cls, lines):
-        file_grammar = GrammarRegistry('doc_gen/lean_syntax/lean_grammar.json')
+        file_grammar = GrammarRegistry(src_path / 'lean_syntax/lean_grammar.json')
         lines = file_grammar.tokenize_line(lines)
         lines = [[line[0], line[1][1:]] for line in lines]
         modifier_flag = []
@@ -553,7 +554,7 @@ class Tokenizer:
             return fraction
 
         theorem = [[]]
-        theorem_grammar = GrammarRegistry('doc_gen/lean_syntax/proof_grammar.json', multiline=False)
+        theorem_grammar = GrammarRegistry(src_path / 'lean_syntax/proof_grammar.json', multiline=False)
         theorem_split = theorem_grammar.tokenize_line(text)
         theorem_split = [[line[0], line[1][1:]] for line in theorem_split if len(line) > 1]
         last_isolated_calc_begin = last_calc_begin = -1
@@ -596,7 +597,10 @@ class Tokenizer:
 
 class lean_file_analyser:
     @classmethod
-    def parse_export(cls, decls):
+    def parse_export(cls, decls, path=None, only_path=False):
+        if only_path:
+            assert path is not None
+            file_list = [str(i) for i in Path(path).glob('**/*.lean')]
         from typing import NamedTuple, List, Optional
         from collections import Counter, defaultdict, namedtuple
             
@@ -652,6 +656,8 @@ class lean_file_analyser:
         def mk_export_db(file_map):
             export_db = {}
             for _, decls in file_map.items():
+                if only_path and decls[0]['filename'] not in file_list:
+                    continue
                 for obj in decls:
                     export_db[obj['name']] = mk_export_map_entry(obj['name'], obj['filename'], obj['kind'], obj['is_meta'], obj['line'], obj['args'], obj['type'], obj['doc_string'], obj['attributes'])
                     # export_db[obj['name']]['decl_header_html'] = env.get_template('decl_header.j2').render(decl=obj)
@@ -678,7 +684,9 @@ class lean_file_analyser:
     
     @classmethod
     def get_decl_source(cls, path, decls):
-        def parsing_file(file, lines):
+        def parsing_file(file):
+            with open(file) as f:
+                lines = f.readlines()
             line_breaks = [0] + sorted(list(set([x[1] for x in files[file]]))) + [len(lines)]
             line_break_switches = {}
             for i, b in enumerate(line_breaks[1 : -1]):
@@ -695,53 +703,53 @@ class lean_file_analyser:
             line_breaks = [0] + line_breaks + [len(lines)]
             decl_blocks[cut_paths[file]]['blocks'] = {}
             for d, i in files[file]:
-                decls[d] = {}
                 index = line_breaks.index(i)
                 source = ''.join(lines[line_breaks[index] : line_breaks[index + 1]])
                 decl_blocks[cut_paths[file]]['blocks'][d] = (''.join(lines[line_breaks[max(index - 5, 1)] : line_breaks[index]]), source)
                 decls[d]['source'] = ''.join([i[0] for i in Tokenizer.parsing_declarations(source)[0][1:]])
                 decls[d]['line'] = [j for i, j in files[file] if i == d][0] + 1
         
-        file_list = list(Path(path).glob('*.lean'))
         files = {}
         cut_paths = {}
         decl_blocks = {}
         for d in decls:
-            if decls[d]['local_filename'] not in file_list:
-                continue
             if decls[d]['local_filename'] not in files:
                 files[decls[d]['local_filename']] = []
             files[decls[d]['local_filename']].append((d, decls[d]['line'] - 1))
             cut_paths[decls[d]['local_filename']] = decls[d]['filename']
-        
+
+        for file in files:
+            parsing_file(file)
+
+        return decls
 
     @classmethod
-    def get_decl_info(cls, path):
+    def get_decl_info(cls, path, only_path=True):
+        global lean_path_basis
+        global lean_paths
         path = Path(path)
-        src_path = Path(__file__).parent.resolve()
+        with open(leaven_path / 'leanpkg.path') as f:
+            leanpkg_path = f.read()
+        with open(leaven_path / 'leanpkg.path', 'w') as f:
+            f.write(leanpkg_path + f'\npath {path}')
+        lean_path_basis = [Path(p) for p in json.loads(subprocess.check_output([f_join(leaven_path, 'elan', 'bin', 'lean'), '--path'], cwd=leaven_path).decode())['path']]
+        lean_paths = [p.resolve() for p in lean_path_basis if p.exists()]
         file_list = [i for i in path.iterdir() if i.suffix == '.lean'] if path.is_dir() else [path]
-        temp_file_list = []
         load_file_list = []
         for file in file_list:
-            if (file_cut := cut_path(file)) is None:
-                temp_file = src_path / f'this_temp_{len(temp_file_list)}.lean'
-                with open(file, 'r') as f, open(temp_file, 'w') as g:
-                    g.write(f.read())
-                temp_file_list.append(temp_file)
-            else:
-                load_file_list.append(file_cut)
+            file_cut = cut_path(file)
+            load_file_list.append(file_cut)
         with open(src_path / 'entrypoint.lean', 'w') as f:
-            f.write('\n'.join([f'import .' + i.stem for i in temp_file_list] + \
-                              [f'import {i}' for i in load_file_list] + \
+            f.write('\n'.join([f'import {i}' for i in load_file_list] + \
                               ["import .export_json\nopen_all_locales"]
                               ))
-        command = ["lean", "--run", "entrypoint.lean"]
-        result = subprocess.run(command, capture_output=True, text=True, cwd=str(src_path))
+        command = ["lean", "--run", src_path / 'entrypoint.lean']
+        result = subprocess.run(command, capture_output=True, text=True, cwd=str(leaven_path))
         # clear temp files
-        for temp_file in temp_file_list:
-            os.remove(temp_file)
-        decls = cls.parse_export(json.loads(result.stdout))
-        return decls
+        os.remove(src_path / 'entrypoint.lean')
+        with open(leaven_path / 'leanpkg.path', 'w') as f:
+            f.write(leanpkg_path)
+        return cls.parse_export(json.loads(result.stdout), path=path, only_path=only_path)
     
     @classmethod
     def simplify_lean_code(cls, code):
@@ -835,29 +843,18 @@ class lean_file_analyser:
     @classmethod
     def auto_complete_code(cls, code_str):
         stack = []
-        result = ""
+        name_regex = re.compile(r'(?:namespace|section)\s*(.*)')
         for line in code_str.split("\n"):
-            if "namespace" in line:
-                stack.append(line.split()[-1])
-            elif "section" in line:
-                stack.append("section")
-            elif "end" in line:
-                if len(stack) == 0:
-                    raise Exception("Unmatched end statement")
-                if "namespace" in stack[-1]:
-                    result += "end " + stack.pop() + "\n"
-                elif stack[-1] == "section":
-                    stack.pop()
-            result += line + "\n"
+            if line.startswith("namespace") or line.startswith("section"):
+                stack.append(line)
         while len(stack) > 0:
-            if "namespace" in stack[-1]:
-                result += "end " + stack.pop() + "\n"
-            elif stack[-1] == "section":
-                raise Exception("Unclosed section")
-        return result
+            last_name = stack.pop()
+            last_name = name_regex.match(last_name).group(1)
+            code_str += "\nend " + last_name
+        return code_str
     
     @classmethod
-    def parse_ast(cls, file, lines, all_asts, kinds, decls):
+    def parse_ast(cls, file, all_asts, kinds, decls, lines=None):
         def get_fraction(start, end, lines):
             if start[0] < end[0]:
                 return lines[start[0] - 1][start[1] : ] + ''.join(lines[start[0] : end[0] - 1]) + lines[end[0] - 1][ : end[1]]
@@ -919,12 +916,16 @@ class lean_file_analyser:
                     stack.append(i)
             return stack
         
+        if lines is None:
+            with open(file, 'r') as f:
+                lines = f.readlines()
+            if lines[-1].endswith('\n'):
+                lines.append('')
         file_comment_regex = re.compile(r'\/-\s*Copyright(?:[^-]|-[^\/])*-\/')
         next_comment_regex = re.compile(r'\/-(?:[^-]|-[^\/])*-\/|--[^\n]*\n')
-        all_proving_environment = {}
-        local_proving_environment = {}
-        all_decl_names = []
-        fields = {}
+        # local_proving_environment = {}
+        # all_decl_names = []
+        decl_fields = {}
         # symbols = {}
         file_comment = file_comment_regex.search(''.join(lines))
         if file_comment:
@@ -934,8 +935,7 @@ class lean_file_analyser:
             file_comment_span = [0,0]
         proving_environment = [(x['start'], x['end'], x['kind'], get_fraction(x['start'], x['end'], lines)) for x in all_asts if x is not None and x['kind'] in ['namespace', 'section', 'end', 'open', 'infix', 'infixl', 'infixr', 'prefix', 'postfix', 'universes', 'variables', 'variable', 'user_command'] and x['start'] >= file_comment_span]
 
-        if 'mdoc' in kinds:
-            mdocs = kinds['mdoc'][0]['value'].replace('\r','').replace('> THIS FILE IS SYNCHRONIZED WITH MATHLIB4.\n> Any changes to this file require a corresponding PR to mathlib4.','')
+        mdocs = kinds['mdoc'][0]['value'].replace('\r','').replace('> THIS FILE IS SYNCHRONIZED WITH MATHLIB4.\n> Any changes to this file require a corresponding PR to mathlib4.','') if 'mdoc' in kinds else None
 
         for ast in [i for k, v in kinds.items() if k in ['theorem', 'definition', 'abbreviation', 'instance', 'structure', 'inductive', 'class', 'class_inductive'] for i in v]:
             if ('content' not in ast or
@@ -986,7 +986,7 @@ class lean_file_analyser:
                     if ast['kind'] == 'instance':
                         get_decl = list(filter(lambda x : 
                                             x.split('.')[ : len(ast_decl) - 1] == ast_decl[ : -1] and 
-                                            x.split('.')[-1] == ast_decl[-1] and 
+                                            ast_decl[-1] in x.split('.')[-1] and 
                                             ast['start'][0] <= decls[x]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1)) and
                                             (decls[x]['source'].strip() in ast['content'] or 
                                              ast['content'].strip() in decls[x]['source'] or
@@ -994,7 +994,7 @@ class lean_file_analyser:
                     elif ast['kind'] in ['structure', 'class', 'class_inductive']:
                         get_decl = list(filter(lambda x : 
                                             x.split('.')[ : len(ast_decl) - 1] == ast_decl[ : -1] and 
-                                            x.split('.')[-1] == ast_decl[-1] and 
+                                            ast_decl[-1] in x.split('.')[-1] and 
                                             ast['start'][0] <= decls[x]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1)) and
                                             (decls[x]['source'].strip() in ast['content'] or 
                                              ast['content'].strip() in decls[x]['source'] or
@@ -1019,14 +1019,14 @@ class lean_file_analyser:
                         assert decls[d]['source'] == last_decl_content
                 if ast['kind'] in ['structure', 'inductive', 'class', 'class_inductive']:
                     if ast['children'][7] is not None:
-                        ast['children'][7]['content'] = cls.get_fraction(ast['children'][7]['start'], ast['end'], lines)
+                        ast['children'][7]['content'] = get_fraction(ast['children'][7]['start'], ast['end'], lines)
                 elif ast['kind'] in ['definition', 'abbreviation'] and ast['children'][5] is not None:
-                    ast['children'][5]['content'] = cls.get_fraction(ast['children'][5]['start'], ast['end'], lines)
+                    ast['children'][5]['content'] = get_fraction(ast['children'][5]['start'], ast['end'], lines)
                 else:
-                    ast['children'][6]['content'] = cls.get_fraction(ast['children'][6]['start'], ast['end'], lines)
+                    ast['children'][6]['content'] = get_fraction(ast['children'][6]['start'], ast['end'], lines)
                 ast['filename'] = str(file)
                 for decl in get_decl:
-                    local_proving_environment[file][decl] = [[i[2], i[3]] for i in open_namespace_and_section]
+                    # local_proving_environment[file][decl] = [[i[2], i[3]] for i in open_namespace_and_section]
                     matched_decls = [i for i in decls if i.split('.')[ : len(decl.split('.'))] == decl.split('.') and ast['start'][0] <= decls[i]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1))]
                     last_decl_content = ''
                     for d in matched_decls:
@@ -1037,23 +1037,24 @@ class lean_file_analyser:
                         decls[d]['line'] = ast['start'][0]
                         decls[d]['start_line'] = ast['start']
                         decls[d]['end_line'] = ast['end']
-                    fields[decl] = matched_decls
-                    all_decl_names.append((decl, str(file)))
-        return
+                    decl_fields[decl] = matched_decls
+                    # all_decl_names.append((decl, str(file)))
+        return decls, decl_fields, mdocs
 
     @classmethod
-    def get_ast(cls, file, build_graph=False):
+    def get_ast(cls, file, lines=None, build_graph=False):
         file = Path(file).resolve()
         graph = None
         if not os.path.exists(file.with_suffix('.ast.json')):
-            os.system(' '.join([f_join(parent_path, 'elan', 'bin', 'lean'), "-M", "20480", "--ast", "--tsast", "--tspp -q ", str(file)]))
+            os.system(' '.join([f_join(leaven_path, 'elan', 'bin', 'lean'), "-M", "20480", "--ast", "--tsast", "--tspp -q ", str(file)]))
         with open(file.with_suffix('.ast.json'), 'r') as f:
             data = json.load(f)
-        with open(file, 'r') as f:
-            lines = f.readlines()
+        if lines is None:
+            with open(file, 'r') as f:
+                lines = f.readlines()
+            if lines[-1].endswith('\n'):
+                lines.append('')
         os.remove(file.with_suffix('.ast.json'))
-        if lines[-1].endswith('\n'):
-            lines.append('')
         kinds = {}
         for item in data['ast']:
             if not item:
@@ -1176,13 +1177,32 @@ class lean_file_analyser:
         lemmas = []
         for l, line in processed_line.items():
             for c, column in line.items():
-                if 'source' in column and column['source'] and 'file' in column['source'] and column['source']['file']:
+                if 'source' in column and column['source']:
                     if 'state' in column and column['state'] and column['state'].split('⊢')[0]and 'Type' not in column['state'].split('⊢')[0]:
                         tactic_states.append([l, c, column])
                     if 'full_id' in column and column['full_id']:
                         lemmas.append([l, c, column])
         return tactic_states, lemmas
+    
+    @classmethod
+    def get_dependency_graph_within_file(cls, decls, file):
+        def position_to_decl(line, column, full_id=None):
+            assert len(result := {k : v for k, v in decls.items() if v['local_filename'] == str(file) and v['start_line'] <= [line, column] <= v['end_line'] and k in decl_fields and (full_id is None or k == full_id)}) == 1
+            return list(result.keys())[0]
 
+        with open(file, 'r') as f:
+            lines = f.readlines()
+        if lines[-1].endswith('\n'):
+            lines.append('')
+        kinds, all_asts, _ = lean_file_analyser.get_ast(file, lines=lines)
+        decls, decl_fields, mdocs = lean_file_analyser.parse_ast(file=file, all_asts=all_asts, kinds=kinds, decls=decls, lines=lines)
+        tactic_states, lemmas = lean_file_analyser.get_training_probes(file=file)
+        graph = nx.DiGraph()
+        for line, column, item in lemmas:
+            if item['source']['file'] is not None:
+                continue
+            graph.add_edge(position_to_decl(item['source']['line'], item['source']['column'], full_id=item['full_id']), position_to_decl(line, column))
+        return decls, tactic_states, lemmas, graph, decl_fields, mdocs
 
 if __name__ == "__main__":
     path = 'test1.lean'

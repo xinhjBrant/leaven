@@ -13,3 +13,7 @@ leaven-0.0.0/
 build/
 upload*
 temp*
+test*
+.vscode*
+leanpkg*
+export_db.json

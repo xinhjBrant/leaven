@@ -759,10 +759,10 @@ class lean_file_analyser:
         simplified_lines = []  # 存储简化后的代码行
 
         for line in lines:
-            ns_match = re.match(r'\s*namespace ([^\s]+)', line)
-            end_match = re.match(r'\s*end ([^\s]+)', line)
+            ns_match = re.match(r'\s*(?:namespace|section)(.*)', line)
+            end_match = re.match(r'\s*end(.*)', line)
             if ns_match:
-                ns_name = ns_match.group(1)
+                ns_name = ns_match.group(1).strip()
                 # 查找simplified_lines中最后一个非空行
                 for i in range(len(simplified_lines) - 1, -1, -1):
                     if simplified_lines[i].strip():
@@ -770,8 +770,10 @@ class lean_file_analyser:
                         break
                 else:
                     last_non_empty_line = ''
-
-                end_match = re.match(r'\s*end ' + re.escape(ns_name), last_non_empty_line)
+                if ns_name:
+                    end_match = re.match(r'\s*end ' + re.escape(ns_name), last_non_empty_line)
+                else:
+                    end_match = re.match(r'\s*end', last_non_empty_line)
                 if end_match:
                     # 如果找到匹配的end语句，删除它
                     del simplified_lines[i]
@@ -789,15 +791,18 @@ class lean_file_analyser:
         simplified_lines = []  # 存储简化后的代码行
 
         namespace_stack = []  # 栈用来存储当前的namespace层级
-        opened_namespaces = defaultdict(set)  # 用来存储在每个namespace层级中已经打开的命名空间
-        universe_namespaces = defaultdict(set)  # 用来存储在每个namespace层级中已经打开的命名空间
+        opened_namespaces = defaultdict(set) 
+        universe_namespaces = defaultdict(set)
         universe_namespaces[None] = set()
+        veriable_namespaces = defaultdict(set)
+        veriable_namespaces[None] = set()
 
         for line in lines:
             ns_match = re.match(r'\s*namespace ([^\s]+)', line)
             end_match = re.match(r'\s*end ([^\s]+)', line)
             open_match = re.match(r'\s*open ([^\s]+)', line)
             universe_match = re.match(r'\s*universes* (.*)', line)
+            veriable_match = re.match(r'\s*veriable* (.*)', line)
 
             if ns_match:
                 ns_name = ns_match.group(1)
@@ -825,7 +830,7 @@ class lean_file_analyser:
                 should_add = True
                 for universe in universes:
                     for ns in reversed(namespace_stack):
-                        if universe in opened_namespaces[ns]:
+                        if universe in universe_namespaces[ns]:
                             should_add = False
                             break
                     if should_add:
@@ -834,6 +839,12 @@ class lean_file_analyser:
                         universe_to_add.append(universe)
                 if universe_to_add:
                     simplified_lines.append('universes ' + ' '.join(universe_to_add))
+            elif veriable_match:
+                veriable_match = veriable_match.group(1).strip()
+                last_ns = namespace_stack[-1] if namespace_stack else None
+                if not veriable_namespaces[last_ns] or veriable_match != veriable_namespaces[last_ns][-1]:
+                    veriable_namespaces[last_ns].add(veriable_match)
+                    simplified_lines.append(veriable_match.group(0).strip())
             else:
                 # 对于非namespace, end和open语句，直接添加到简化后的代码行
                 simplified_lines.append(line)
@@ -854,35 +865,29 @@ class lean_file_analyser:
         return code_str
     
     @classmethod
-    def parse_ast(cls, file, all_asts, kinds, decls, lines=None):
+    def get_proving_environment(cls, proving_environment):
+        stack = []
+        for i in proving_environment:
+            if i[2] == 'end':
+                while True:
+                    last_item = stack.pop()
+                    if last_item[2] not in ['namespace', 'section']:
+                        continue
+                    if end_name := i[3][i[3].find(i[2]) + len(i[2]) : ].strip():
+                        closed_name = last_item[3][last_item[3].find(last_item[2]) + len(last_item[2]) : ].strip()
+                        assert end_name == closed_name, (end_name, closed_name)
+                    break
+            else:
+                stack.append(i)
+        return stack
+    
+    @classmethod
+    def parse_lean_file(cls, file, decls, lines=None, debug=False):
         def get_fraction(start, end, lines):
             if start[0] < end[0]:
                 return lines[start[0] - 1][start[1] : ] + ''.join(lines[start[0] : end[0] - 1]) + lines[end[0] - 1][ : end[1]]
             else:
                 return lines[start[0] - 1][start[1] : end[1]]
-        
-        def get_content(ast, lines, file_comment_span):
-            if ast is None:
-                return
-            if ast['kind'] in ['ident', 'notation', 'nat']:
-                if ('content' not in ast or not ast['content']) and 'value' in ast:
-                    if isinstance(ast['value'], list):
-                        ast['end'][1] += len('.'.join(ast['value']))
-                    if ast['kind'] == 'nat':
-                        ast['end'][1] += len(ast['value']) + 1
-                    else:
-                        ast['end'][1] += len(ast['value'])
-            if 'children' in ast:
-                for c in ast['children']:
-                    if c is None:
-                        continue
-                    get_content(c, lines, file_comment_span)
-                    if c['start'] >= file_comment_span and c['start'] < ast['start']:
-                        ast['start'] = c['start']
-                    if c['end'] > ast['end']:
-                        ast['end'] = c['end']
-            if ast['start'] >= file_comment_span:
-                ast['content'] = get_fraction(ast['start'], ast['end'], lines)
 
         def get_instance_name(ast):
             if not 'children' in ast and ast['kind'] in ['ident', 'notation'] and ast['value']:
@@ -899,41 +904,73 @@ class lean_file_analyser:
                 raise ValueError
             else:
                 raise ValueError
-            
-        def get_proving_environment(proving_environment):
-            stack = []
-            for i in proving_environment:
-                if i[2] == 'end':
-                    while True:
-                        last_item = stack.pop()
-                        if last_item[2] not in ['namespace', 'section']:
-                            continue
-                        if end_name := i[3][i[3].find(i[2]) + len(i[2]) : ].strip():
-                            closed_name = last_item[3][last_item[3].find(last_item[2]) + len(last_item[2]) : ].strip()
-                            assert end_name == closed_name, (end_name, closed_name)
-                        break
-                else:
-                    stack.append(i)
-            return stack
         
+        def folding_ast(all_asts, lines):
+            kinds = {}
+            for item in all_asts:
+                if item is None:
+                    continue
+                # graph.add_node(i, **item)
+                # if 'children' in item:
+                #     graph.add_edges_from([(i, j) for j in item['children']])
+                if 'children' in item:
+                    # deps.extend([(i, j) for j in item['children']])
+                    item['children'] = [all_asts[i] for i in item['children'] if i is not None]
+                if 'kind' in item and \
+                    'start' in item and len(lines[item['start'][0] - 1]) > item['start'][1] and \
+                    'end' in item and len(lines[item['end'][0] - 1]) > item['end'][1]:
+                    if item['kind'] not in kinds:
+                        kinds[item['kind']] = []
+                    kinds[item['kind']].append(item)            
+            return kinds
+        
+        def get_content(all_asts, lines, start_pos = [0,0]):
+            local_start_pos = None
+            local_end_pos = None
+            for item in all_asts:
+                if item is None:
+                    continue
+                if item['kind'] in ['ident', 'notation', 'nat']:
+                    if ('content' not in item or not item['content']) and 'value' in item and item['end'][0] == item['start'][0]:
+                        if isinstance(item['value'], list):
+                            item['end'][1] = max(item['start'][1] + len('.'.join(item['value'])), item['end'][1])
+                        if item['kind'] == 'nat':
+                            item['end'][1] = max(item['start'][1] + len(item['value']), item['end'][1])
+                        else:
+                            item['end'][1] = max(item['start'][1] + len(item['value']), item['end'][1])
+                if 'children' in item and any(i for i in item['children'] if i is not None):
+                    child_start_pos, child_end_pos = get_content(item['children'], lines, start_pos)
+                    item['start'] = min(item['start'], child_start_pos) if 'start' in item else child_start_pos
+                    item['end'] = max(item['end'], child_end_pos) if 'end' in item else child_end_pos
+                if 'start' in item and 'end' in item and item['start'] >= start_pos:
+                    item['content'] = get_fraction(item['start'], item['end'], lines)
+                local_start_pos = item['start'] if local_start_pos is None else min(local_start_pos, item['start'])
+                local_end_pos = item['end'] if local_end_pos is None else max(local_end_pos, item['end'])
+            return local_start_pos, local_end_pos
+        
+        file = Path(file).resolve()
+        if not debug or not os.path.exists(file.with_suffix('.ast.json')):
+            os.system(' '.join([f_join(leaven_path, 'elan', 'bin', 'lean'), "-M", "20480", "--ast", "--tsast", "--tspp -q ", str(file)]))
+        with open(file.with_suffix('.ast.json'), 'r') as f:
+            all_asts = json.load(f)['ast']
         if lines is None:
             with open(file, 'r') as f:
                 lines = f.readlines()
             if lines[-1].endswith('\n'):
                 lines.append('')
-        file_comment_regex = re.compile(r'\/-\s*Copyright(?:[^-]|-[^\/])*-\/')
-        next_comment_regex = re.compile(r'\/-(?:[^-]|-[^\/])*-\/|--[^\n]*\n')
-        # local_proving_environment = {}
-        # all_decl_names = []
-        decl_fields = {}
-        # symbols = {}
-        file_comment = file_comment_regex.search(''.join(lines))
+        if not debug:
+            os.remove(file.with_suffix('.ast.json'))
+        file_comment = re.search(r'\/-\s*Copyright(?:[^-]|-[^\/])*-\/', ''.join(lines))
         if file_comment:
             file_comment_span = ''.join(lines)[ : file_comment.span()[1]].split('\n')
             file_comment_span = [len(file_comment_span),len(file_comment_span[-1])]
         else:
             file_comment_span = [0,0]
-        proving_environment = [(x['start'], x['end'], x['kind'], get_fraction(x['start'], x['end'], lines)) for x in all_asts if x is not None and x['kind'] in ['namespace', 'section', 'end', 'open', 'infix', 'infixl', 'infixr', 'prefix', 'postfix', 'universes', 'variables', 'variable', 'user_command'] and x['start'] >= file_comment_span]
+        kinds = folding_ast(all_asts, lines)
+        get_content(all_asts, lines, file_comment_span)
+        decl_fields = {}
+        next_comment_regex = re.compile(r'\/-(?:[^-]|-[^\/])*-\/|--[^\n]*\n')
+        proving_environment = sorted([(x['start'], x['end'], x['kind'], get_fraction(x['start'], x['end'], lines)) for k in kinds for x in kinds[k] if x['start'] >= file_comment_span if k in ['namespace', 'section', 'end', 'infix', 'infixl', 'infixr', 'prefix', 'postfix', 'universes', 'variables', 'variable', 'user_command', 'include', 'attribute', 'theory']])
 
         mdocs = kinds['mdoc'][0]['value'].replace('\r','').replace('> THIS FILE IS SYNCHRONIZED WITH MATHLIB4.\n> Any changes to this file require a corresponding PR to mathlib4.','') if 'mdoc' in kinds else None
 
@@ -944,7 +981,6 @@ class lean_file_analyser:
                 (ast['kind'] not in ['definition', 'theorem', 'abbreviation'] and ast['kind'] not in ast['content'])):
                 # ast = ast
                 continue
-            get_content(ast, lines, file_comment_span)
             if ast['end'][1] > 0:
                 next_comment = next_comment_regex.search(''.join(lines[ast['end'][0] - 1 : ]))
                 if next_comment and next_comment.span()[0] < len(lines[ast['end'][0] - 1]) and ast['end'][1] > next_comment.span()[0]:
@@ -970,10 +1006,8 @@ class lean_file_analyser:
                     ast_decl_list = [get_instance_name(ast['children'][3])]
             else:
                 ast_decl_list = [ast['children'][3]['value']]
-            pre_env = cls.simplify_lean_code('\n'.join(i[-1] for i in proving_environment))
-            open_namespace_and_section = get_proving_environment([x for x in proving_environment if x[0] <= ast['start']])
-            open_namespace = {k : [i[3][i[3].find(k) + len(k) : ].strip() for i in open_namespace_and_section if i[2] == k] for k in ['namespace', 'open']}
-            last_namespace = '.'.join(open_namespace['namespace']).split('.') if open_namespace['namespace'] else []
+            open_namespace_and_section = [i[3][i[3].find('namespace') + len('namespace') : ].strip() for i in cls.get_proving_environment([x for x in proving_environment if x[0] <= ast['start']]) if i[2] == 'namespace']
+            last_namespace = '.'.join(open_namespace_and_section).split('.') if open_namespace_and_section else []
             for ast_decl in ast_decl_list:
                 if isinstance(ast_decl, list):
                     if ast_decl[0] == '_root_':
@@ -1027,54 +1061,75 @@ class lean_file_analyser:
                 ast['filename'] = str(file)
                 for decl in get_decl:
                     # local_proving_environment[file][decl] = [[i[2], i[3]] for i in open_namespace_and_section]
-                    matched_decls = [i for i in decls if i.split('.')[ : len(decl.split('.'))] == decl.split('.') and ast['start'][0] <= decls[i]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1))]
+                    matched_decls = [i for i in decls if 
+                                     i.split('.')[ : len(decl.split('.')) - 1] == decl.split('.')[ : -1] and \
+                                        '.'.join(i.split('.')[len(decl.split('.')) - 1 : ]).startswith(decl.split('.')[-1]) and \
+                                            ast['start'][0] <= decls[i]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1))]
                     last_decl_content = ''
                     for d in matched_decls:
                         assert not last_decl_content or last_decl_content in decls[d]['source'] or decls[d]['source'].strip() in last_decl_content
                         last_decl_content = decls[d]['source'].strip()
                         decls[d]['source'] = ast['content']
-                        decls[d]['complete_source'] = cls.auto_complete_code(pre_env + '\n\n' + ast['content'])
                         decls[d]['line'] = ast['start'][0]
-                        decls[d]['start_line'] = ast['start']
-                        decls[d]['end_line'] = ast['end']
+                        decls[d]['start'] = ast['start']
+                        decls[d]['end'] = ast['end']
                     decl_fields[decl] = matched_decls
                     # all_decl_names.append((decl, str(file)))
-        return decls, decl_fields, mdocs
+        return decls, proving_environment, decl_fields, mdocs
 
-    @classmethod
-    def get_ast(cls, file, lines=None, build_graph=False):
-        file = Path(file).resolve()
-        graph = None
-        if not os.path.exists(file.with_suffix('.ast.json')):
-            os.system(' '.join([f_join(leaven_path, 'elan', 'bin', 'lean'), "-M", "20480", "--ast", "--tsast", "--tspp -q ", str(file)]))
-        with open(file.with_suffix('.ast.json'), 'r') as f:
-            data = json.load(f)
-        if lines is None:
-            with open(file, 'r') as f:
-                lines = f.readlines()
-            if lines[-1].endswith('\n'):
-                lines.append('')
-        os.remove(file.with_suffix('.ast.json'))
-        kinds = {}
-        for item in data['ast']:
-            if not item:
-                continue
-            if 'children' in item:
-                item['children'] = [data['ast'][i] for i in item['children']]
-            if 'kind' in item:
-                if item['kind'] not in kinds:
-                    kinds[item['kind']] = []
-                kinds[item['kind']].append(item)
-            if 'start' in item and 'end' in item:
-                if item['start'][0] < item['end'][0]:
-                    item['content'] = lines[item['start'][0] - 1][item['start'][1] : ] + ''.join(lines[item['start'][0] : item['end'][0] - 1]) + lines[item['end'][0] - 1][ : item['end'][1]]
-                else:
-                    item['content'] = lines[item['start'][0] - 1][item['start'][1] : item['end'][1]]
-        if build_graph:
-            graph = nx.DiGraph()
-            graph.add_node(0, kind=None, start=None, end=None)
-            cls.transverse_ast(kinds['file'], graph, 0, None, None)
-        return kinds, data['ast'], graph
+    # @classmethod
+    # def get_ast(cls, file, lines=None, build_graph=False):
+    #     def folding_ast(all_asts, lines, start_pos = [0,0]):
+    #         kinds = {}
+
+    #         for item in all_asts:
+    #             if not item:
+    #                 continue
+    #             # graph.add_node(i, **item)
+    #             # if 'children' in item:
+    #             #     graph.add_edges_from([(i, j) for j in item['children']])
+    #             if 'children' in item:
+    #                 # deps.extend([(i, j) for j in item['children']])
+    #                 item['children'] = [all_asts[i] for i in item['children'] if i is not None]
+    #             if 'kind' in item:
+    #                 if item['kind'] not in kinds:
+    #                     kinds[item['kind']] = []
+    #                 kinds[item['kind']].append(item)
+    #             if 'start' in item and 'end' in item and item['start'] >= start_pos:
+    #                 if item['start'][0] < item['end'][0]:
+    #                     item['content'] = lines[item['start'][0] - 1][item['start'][1] : ] + ''.join(lines[item['start'][0] : item['end'][0] - 1]) + lines[item['end'][0] - 1][ : item['end'][1]]
+    #                 else:
+    #                     item['content'] = lines[item['start'][0] - 1][item['start'][1] : item['end'][1]]
+    #             # else:
+    #             #     item['content'] = ''
+            
+    #         return kinds
+        
+    #     file = Path(file).resolve()
+    #     graph = None
+    #     if not os.path.exists(file.with_suffix('.ast.json')):
+    #         os.system(' '.join([f_join(leaven_path, 'elan', 'bin', 'lean'), "-M", "20480", "--ast", "--tsast", "--tspp -q ", str(file)]))
+    #     with open(file.with_suffix('.ast.json'), 'r') as f:
+    #         all_asts = json.load(f)
+    #     if lines is None:
+    #         with open(file, 'r') as f:
+    #             lines = f.readlines()
+    #         if lines[-1].endswith('\n'):
+    #             lines.append('')
+    #     os.remove(file.with_suffix('.ast.json'))
+    #     file_comment = re.search(r'\/-\s*Copyright(?:[^-]|-[^\/])*-\/', ''.join(lines))
+    #     if file_comment:
+    #         file_comment_span = ''.join(lines)[ : file_comment.span()[1]].split('\n')
+    #         file_comment_span = [len(file_comment_span),len(file_comment_span[-1])]
+    #     else:
+    #         file_comment_span = [0,0]
+        
+    #     kinds = folding_ast(all_asts, lines, file_comment_span)
+    #     if build_graph:
+    #         graph = nx.DiGraph()
+    #         graph.add_node(0, kind=None, start=None, end=None)
+    #         cls.transverse_ast(kinds['file'], graph, 0, None, None)
+    #     return kinds, all_asts['ast'], graph
     
     @classmethod
     def transverse_ast(cls, ast, graph : nx.DiGraph, parent, start, end):
@@ -1095,7 +1150,9 @@ class lean_file_analyser:
     @classmethod
     def document_probing(self, file=None, content=None, lean_server=None):
         if lean_server is None:
-            lean_server = LeanEnv(cwd=str(Path('.').resolve()))
+            local_lean_server = LeanEnv(cwd=str(Path('.').resolve()))
+        else:
+            local_lean_server = lean_server
         if file is not None:
             with open(file, 'r') as f:
                 lines = f.readlines()
@@ -1111,7 +1168,7 @@ class lean_file_analyser:
         processed_line = {}
         last_ts = ''
         line_buffer = ''
-        lean_server.reset(options={"filename": str(file)})
+        local_lean_server.reset(options={"filename": str(file)})
         for row, sep in enumerate(sep_lines):
             if row < start_line:
                 continue
@@ -1126,7 +1183,7 @@ class lean_file_analyser:
                 if column == last_sep:
                     continue
                 try:
-                    ts = lean_server.render(options={"filename" : str(file), "line" : row, "col" : column})
+                    ts = local_lean_server.render(options={"filename" : str(file), "line" : row, "col" : column})
                 except Exception as e:
                     line_buffer += line[last_sep : column]
                     last_sep = column
@@ -1143,6 +1200,9 @@ class lean_file_analyser:
         if len(lines) not in processed_line:
             processed_line[len(lines)] = {}
         processed_line[len(lines)][len(lines[-1])] = {'precontent' : line_buffer}
+        if lean_server is None:
+            local_lean_server.close()
+            del local_lean_server
         return processed_line
 
     @classmethod
@@ -1184,25 +1244,57 @@ class lean_file_analyser:
                         lemmas.append([l, c, column])
         return tactic_states, lemmas
     
+    
     @classmethod
-    def get_dependency_graph_within_file(cls, decls, file):
-        def position_to_decl(line, column, full_id=None):
-            assert len(result := {k : v for k, v in decls.items() if v['local_filename'] == str(file) and v['start_line'] <= [line, column] <= v['end_line'] and k in decl_fields and (full_id is None or k == full_id)}) == 1
-            return list(result.keys())[0]
-
-        with open(file, 'r') as f:
-            lines = f.readlines()
-        if lines[-1].endswith('\n'):
-            lines.append('')
-        kinds, all_asts, _ = lean_file_analyser.get_ast(file, lines=lines)
-        decls, decl_fields, mdocs = lean_file_analyser.parse_ast(file=file, all_asts=all_asts, kinds=kinds, decls=decls, lines=lines)
-        tactic_states, lemmas = lean_file_analyser.get_training_probes(file=file)
+    def get_dependency_graph_within_file(cls, decls, file, proving_environment, lemmas, decl_fields):
+        def position_to_decl(line, column):
+            if len(result := {
+                k : v 
+                for k, v in decls.items() 
+                if 'start' in v and 'end' in v and v['local_filename'] == str(file) and v['start'] <= [line, column] < v['end'] and k not in appended_fields
+                }) == 1:
+                return list(result.items())[0]
+            elif len(result := {
+                f"{kind}_{start_line}_{start_column}_{end_line}_{end_column}" : 
+                {'filename': cut_path(file), 
+                 'local_filename': file, 
+                 'kind': kind, 
+                 'start': [start_line, start_column], 
+                 'end': [end_line, end_column], 
+                 'source': content} 
+                 for (start_line, start_column), (end_line, end_column), kind, content in proving_environment 
+                 if (start_line, start_column) <= (line, column) <= (end_line, end_column)
+                 }) == 1:
+                return list(result.items())[0]
+            else:
+                raise ValueError
+        
+        appended_fields = [j for k, v in decl_fields.items() for j in v if j != k]
         graph = nx.DiGraph()
         for line, column, item in lemmas:
             if item['source']['file'] is not None:
                 continue
-            graph.add_edge(position_to_decl(item['source']['line'], item['source']['column'], full_id=item['full_id']), position_to_decl(line, column))
-        return decls, tactic_states, lemmas, graph, decl_fields, mdocs
+            head, head_info = position_to_decl(item['source']['line'], item['source']['column'])
+            graph.add_node(head, **head_info)
+            tail, tail_info = position_to_decl(line, column)
+            graph.add_node(tail, **tail_info)
+            graph.add_edge(head, tail)
+            # try:
+            #     graph.add_edge(position_to_decl(item['source']['line'], item['source']['column']), position_to_decl(line, column))
+            # except:
+            #     continue
+        return graph
+        
+    
+    @classmethod
+    def main(cls, decls, file, debug=False):
+        with open(file, 'r') as f:
+            lines = f.readlines()
+        if lines[-1].endswith('\n'):
+            lines.append('')
+        decls, proving_environment, decl_fields, mdocs = lean_file_analyser.parse_lean_file(file=file, decls=decls, lines=lines, debug=debug)
+        tactic_states, lemmas = lean_file_analyser.get_training_probes(file=file)
+        return decls, proving_environment, tactic_states, lemmas, decl_fields, mdocs
 
 if __name__ == "__main__":
     path = 'test1.lean'

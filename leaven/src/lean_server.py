@@ -717,13 +717,12 @@ class LeanEnv:
         
         return positions[:-1]
     
-    def render_all(self, filename, full_context, again=False, context_to_check=None):
-        checking_start = full_context.find(context_to_check) if context_to_check is not None else -1
+    def render_all(self, filename, full_context, again=False, check_span=None):
         decl_text = full_context
         outputs = None
-        search_flag = checking_start if checking_start != -1 else 0
+        search_flag = check_span[0] if check_span is not None else 0
         pattern = re.compile(r'\s*repeat\s*\{\s*sorry\b|by\s+sorry\b|\s*\bsorry\b')
-        while search := pattern.search(full_context, search_flag, (checking_start + len(context_to_check)) if checking_start != -1 else sys.maxsize):
+        while search := pattern.search(full_context, search_flag, check_span[1] if check_span is not None else sys.maxsize):
             output = None
             search_flag = search.end()
             positions = self.find_positions(search, full_context)
@@ -751,7 +750,7 @@ class LeanEnv:
         if self.lean_server:
             self.lean_server.stop()
 
-    def verify_lean_file(self, content, filename=''):
+    def verify_lean_file(self, content, filename='', check_span=None):
         """
         Writes the provided content to a working file named f'inference/working_{start_time}.lean'. The function then uses the Lean 3 verifier to validate the content of this working file. It processes the events returned by the verifier and categorizes them into errors, warnings, and informational messages based on their severity. Additionally, the function also retrieves the local proof states for all instances of the keyword `sorry` in the file content. These proof states are attached with their corresponding line and column numbers and returned.
         :param file_content: the content of a .lean file to verify
@@ -761,7 +760,7 @@ class LeanEnv:
         warning =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.warning][ : 5])
         info =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.information][ : 5])
         try:
-            open_states, content = self.render_all(filename=filename, full_context=content) # get the local proof states for all keyword `sorry`
+            open_states, content = self.render_all(filename=filename, full_context=content, check_span=check_span) # get the local proof states for all keyword `sorry`
             open_states = [f"line {i[0]}, column {i[1]}: \n{i[2]}" for i in open_states[ : 5] if i[2] is not None] if open_states is not None else [] # proof states attached with line and column
         except Exception as e:
             if not error:

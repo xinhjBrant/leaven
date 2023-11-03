@@ -210,7 +210,7 @@ class Rule:
             self.end_pattern = pattern['end']
         self.patterns = [Rule(pat) for pat in pattern['patterns']] if 'patterns' in pattern and pattern['patterns'] else None
 
-class Tokenizer:
+class SyntaxParser:
     @classmethod
     def parsing_declarations(cls, lines):
         file_grammar = GrammarRegistry(src_path / 'lean_syntax/lean_grammar.json')
@@ -683,7 +683,8 @@ class lean_file_analyser:
         return mk_export_db(file_map)
     
     @classmethod
-    def get_decl_source(cls, path, decls):
+    def get_decl_source(cls, decls, num_processes=30):
+        import multiprocessing
         def parsing_file(file):
             with open(file) as f:
                 lines = f.readlines()
@@ -706,8 +707,12 @@ class lean_file_analyser:
                 index = line_breaks.index(i)
                 source = ''.join(lines[line_breaks[index] : line_breaks[index + 1]])
                 decl_blocks[cut_paths[file]]['blocks'][d] = (''.join(lines[line_breaks[max(index - 5, 1)] : line_breaks[index]]), source)
-                decls[d]['source'] = ''.join([i[0] for i in Tokenizer.parsing_declarations(source)[0][1:]])
+                decls[d]['source'] = ''.join([i[0] for i in SyntaxParser.parsing_declarations(source)[0][1:]])
                 decls[d]['line'] = [j for i, j in files[file] if i == d][0] + 1
+            return decls
+        
+        def get(decls, all_decls):
+            all_decls.update(decls)
         
         files = {}
         cut_paths = {}
@@ -718,13 +723,16 @@ class lean_file_analyser:
             files[decls[d]['local_filename']].append((d, decls[d]['line'] - 1))
             cut_paths[decls[d]['local_filename']] = decls[d]['filename']
 
-        for file in files:
-            parsing_file(file)
+        with multiprocessing.Pool(processes=num_processes) as pool:
+            results = [pool.apply_async(parsing_file, ({k : v for k, v in decls.items() if v['local_filename'] == str(file)}, file,)) for file in files]
+            results = [get(result.get(), decls) for result in results]
+        # for file in files:
+        #     parsing_file(file)
 
         return decls
 
     @classmethod
-    def get_decl_info(cls, path, only_path=True):
+    def get_decl_info(cls, path, only_path=False, max_memory_limit=102400):
         global lean_path_basis
         global lean_paths
         path = Path(path)
@@ -741,9 +749,9 @@ class lean_file_analyser:
             load_file_list.append(file_cut)
         with open(src_path / 'entrypoint.lean', 'w') as f:
             f.write('\n'.join([f'import {i}' for i in load_file_list] + \
-                              ["import .export_json\nopen_all_locales"]
+                              ["import .export_json\nimport all\nopen_all_locales"]
                               ))
-        command = ["lean", "--run", src_path / 'entrypoint.lean']
+        command = ["lean", "--run", src_path / 'entrypoint.lean', "-M" , str(max_memory_limit)]
         result = subprocess.run(command, capture_output=True, text=True, cwd=str(leaven_path))
         # clear temp files
         os.remove(src_path / 'entrypoint.lean')
@@ -755,99 +763,122 @@ class lean_file_analyser:
     def simplify_lean_code(cls, code):
         import re
         from collections import defaultdict
-        lines = code.split('\n')
-        simplified_lines = []  # 存储简化后的代码行
 
-        for line in lines:
-            ns_match = re.match(r'\s*(?:namespace|section)(.*)', line)
-            end_match = re.match(r'\s*end(.*)', line)
-            if ns_match:
-                ns_name = ns_match.group(1).strip()
-                # 查找simplified_lines中最后一个非空行
-                for i in range(len(simplified_lines) - 1, -1, -1):
-                    if simplified_lines[i].strip():
-                        last_non_empty_line = simplified_lines[i]
-                        break
-                else:
-                    last_non_empty_line = ''
-                if ns_name:
-                    end_match = re.match(r'\s*end ' + re.escape(ns_name), last_non_empty_line)
-                else:
-                    end_match = re.match(r'\s*end', last_non_empty_line)
-                if end_match:
-                    # 如果找到匹配的end语句，删除它
-                    del simplified_lines[i]
-                else:
-                    # 否则，添加当前的namespace语句
-                    simplified_lines.append(line)
-            elif end_match:
-                # 添加当前的end语句
-                simplified_lines.append(line)
-            else:
-                # 对于非namespace和end语句，直接添加到简化后的代码行
-                simplified_lines.append(line)
+        def combine_commands(lines):
+            simplified_lines = []  # 存储简化后的代码行
+            namespace_stack = [None]  # 栈用来存储当前的namespace层级
+            opened_namespaces = defaultdict(list) 
+            opened_namespaces[None] = list()
+            universe_namespaces = defaultdict(list)
+            universe_namespaces[None] = list()
+            variable_namespaces = defaultdict(list)
+            variable_namespaces[None] = list()
+            theory_namespaces = defaultdict(list)
+            theory_namespaces[None] = list()
 
-        lines = simplified_lines
-        simplified_lines = []  # 存储简化后的代码行
+            for line in lines:
+                ns_match = re.match(r'\s*(?:namespace|section)\s*(.*)', line)
+                end_match = re.match(r'\s*end\s*(.*)', line)
+                open_match = re.match(r'\s*open\s*(.*)', line)
+                universe_match = re.match(r'\s*universes* (.*)', line)
+                variable_match = re.match(r'\s*variables* (.*)', line)
 
-        namespace_stack = []  # 栈用来存储当前的namespace层级
-        opened_namespaces = defaultdict(set) 
-        universe_namespaces = defaultdict(set)
-        universe_namespaces[None] = set()
-        veriable_namespaces = defaultdict(set)
-        veriable_namespaces[None] = set()
-
-        for line in lines:
-            ns_match = re.match(r'\s*namespace ([^\s]+)', line)
-            end_match = re.match(r'\s*end ([^\s]+)', line)
-            open_match = re.match(r'\s*open ([^\s]+)', line)
-            universe_match = re.match(r'\s*universes* (.*)', line)
-            veriable_match = re.match(r'\s*veriable* (.*)', line)
-
-            if ns_match:
-                ns_name = ns_match.group(1)
-                namespace_stack.append(ns_name)
-                simplified_lines.append(line)
-            elif end_match:
-                if namespace_stack:  # 防止空栈
-                    namespace_stack.pop()
-                simplified_lines.append(line)
-            elif open_match:
-                open_ns = open_match.group(1)
-                should_add = True
-                # 检查是否在当前namespace层级或上层中已经打开了这个命名空间
-                for ns in reversed(namespace_stack):
-                    if open_ns in opened_namespaces[ns]:
-                        should_add = False
-                        break
-                if should_add:
-                    # 如果没有打开过这个命名空间，则添加这个open语句并更新opened_namespaces
-                    opened_namespaces[namespace_stack[-1]].add(open_ns) if namespace_stack else None
-                    simplified_lines.append(line)
-            elif universe_match:
-                universes = universe_match.group(1).split()
-                universe_to_add = []
-                should_add = True
-                for universe in universes:
+                if line.strip() == 'noncomputable theory':
+                    should_add = True
                     for ns in reversed(namespace_stack):
-                        if universe in universe_namespaces[ns]:
+                        if 'noncomputable theory' in theory_namespaces[ns]:
                             should_add = False
                             break
                     if should_add:
-                        ns_to_add = namespace_stack[-1] if namespace_stack else None
-                        universe_namespaces[ns_to_add].add(universe)
-                        universe_to_add.append(universe)
-                if universe_to_add:
-                    simplified_lines.append('universes ' + ' '.join(universe_to_add))
-            elif veriable_match:
-                veriable_match = veriable_match.group(1).strip()
-                last_ns = namespace_stack[-1] if namespace_stack else None
-                if not veriable_namespaces[last_ns] or veriable_match != veriable_namespaces[last_ns][-1]:
-                    veriable_namespaces[last_ns].add(veriable_match)
-                    simplified_lines.append(veriable_match.group(0).strip())
-            else:
-                # 对于非namespace, end和open语句，直接添加到简化后的代码行
-                simplified_lines.append(line)
+                        theory_namespaces[namespace_stack[-1]].append('noncomputable theory')
+                        simplified_lines.append(line)
+                if ns_match:
+                    ns_name = ns_match.group(1).strip()
+                    namespace_stack.append(ns_name)
+                    simplified_lines.append(line)
+                elif end_match:
+                    ns_name = end_match.group(1).strip()
+                    last_ns = namespace_stack.pop()
+                    assert last_ns == ns_name
+                    simplified_lines.append(line)
+                elif open_match:
+                    open_ns = open_match.group(1).strip().split()
+                    ns_to_add = []
+                    should_add = True
+                    # 检查是否在当前namespace层级或上层中已经打开了这个命名空间
+                    for open_n in open_ns:
+                        for ns in reversed(namespace_stack):
+                            if open_n in opened_namespaces[ns]:
+                                should_add = False
+                                break
+                        if should_add:
+                            # 如果没有打开过这个命名空间，则添加这个open语句并更新opened_namespaces
+                            opened_namespaces[namespace_stack[-1]].append(open_n)
+                            ns_to_add.append(open_n)
+                    if ns_to_add:
+                        simplified_lines.append('open ' + ' '.join(ns_to_add))
+                elif universe_match:
+                    universes = universe_match.group(1).split()
+                    universe_to_add = []
+                    should_add = True
+                    for universe in universes:
+                        for ns in reversed(namespace_stack):
+                            if universe in universe_namespaces[ns]:
+                                should_add = False
+                                break
+                        if should_add:
+                            universe_namespaces[namespace_stack[-1]].append(universe)
+                            universe_to_add.append(universe)
+                    if universe_to_add:
+                        simplified_lines.append('universes ' + ' '.join(universe_to_add))
+                elif variable_match:
+                    variable_command = variable_match.group(1).strip()
+                    should_add = True
+                    for ns in reversed(namespace_stack):
+                        if variable_command in variable_namespaces[ns]:
+                            should_add = False
+                            break
+                    if should_add:
+                        variable_namespaces[namespace_stack[-1]].append(variable_command)
+                        simplified_lines.append(line)
+                else:
+                    # 对于非namespace, end和open语句，直接添加到简化后的代码行
+                    simplified_lines.append(line)
+            return simplified_lines
+        
+        def combine_namespaces(lines):
+            simplified_lines = []
+            for line in lines:
+                ns_match = re.match(r'\s*(?:namespace|section)(.*)', line)
+                end_match = re.match(r'\s*end(.*)', line)
+                if ns_match:
+                    ns_name = ns_match.group(1).strip()
+                    # 查找simplified_lines中最后一个非空行
+                    for i in range(len(simplified_lines) - 1, -1, -1):
+                        if simplified_lines[i].strip():
+                            last_non_empty_line = simplified_lines[i]
+                            break
+                    else:
+                        last_non_empty_line = ''
+                    if ns_name:
+                        end_match = re.match(r'\s*end ' + re.escape(ns_name), last_non_empty_line)
+                    else:
+                        end_match = re.match(r'\s*end', last_non_empty_line)
+                    if end_match:
+                        # 如果找到匹配的end语句，删除它
+                        del simplified_lines[i]
+                    else:
+                        # 否则，添加当前的namespace语句
+                        simplified_lines.append(line)
+                elif end_match:
+                    # 添加当前的end语句
+                    simplified_lines.append(line)
+                else:
+                    # 对于非namespace和end语句，直接添加到简化后的代码行
+                    simplified_lines.append(line)
+            return simplified_lines
+        
+        simplified_lines = combine_commands(combine_namespaces(combine_commands(code.split('\n'))))
 
         return re.sub(r'\n\n+', '\n\n', '\n'.join(simplified_lines))
     
@@ -879,6 +910,30 @@ class lean_file_analyser:
                     break
             else:
                 stack.append(i)
+        return stack
+
+    @classmethod
+    def simplify_environment(cls, decl_list, proving_environment):
+        def get_name(item):
+            return item[3][item[3].find(item[2]) + len(item[2]) : ].strip()
+        
+        commands = [[item['start'], item['end'], item['kind'], item['source']] for item in decl_list]
+        commands = sorted(commands + proving_environment, key=lambda x : x[ : 2])
+        stack = []
+        for item in commands:
+            if item[2] == 'end':
+                for j in range(len(stack) - 1, -1, -1):
+                    if stack[j][2] in ['namespace', 'section']:
+                        if end_name := get_name(item):
+                            last_name = get_name(stack[j])
+                            assert end_name == last_name, (end_name, last_name)
+                        stack = stack[ : j]
+                        break
+                    elif stack[j][2] in ['axiom', 'theorem', 'def', 'inductive', 'structure', 'constant']:
+                        stack.append(item)
+                        break
+            else:
+                stack.append(item)
         return stack
     
     @classmethod
@@ -917,8 +972,8 @@ class lean_file_analyser:
                     # deps.extend([(i, j) for j in item['children']])
                     item['children'] = [all_asts[i] for i in item['children'] if i is not None]
                 if 'kind' in item and \
-                    'start' in item and len(lines[item['start'][0] - 1]) > item['start'][1] and \
-                    'end' in item and len(lines[item['end'][0] - 1]) > item['end'][1]:
+                    ('start' not in item or len(lines[item['start'][0] - 1]) >= item['start'][1]) and \
+                    ('end' not in item or len(lines[item['end'][0] - 1]) >= item['end'][1]):
                     if item['kind'] not in kinds:
                         kinds[item['kind']] = []
                     kinds[item['kind']].append(item)            
@@ -970,7 +1025,8 @@ class lean_file_analyser:
         get_content(all_asts, lines, file_comment_span)
         decl_fields = {}
         next_comment_regex = re.compile(r'\/-(?:[^-]|-[^\/])*-\/|--[^\n]*\n')
-        proving_environment = sorted([(x['start'], x['end'], x['kind'], get_fraction(x['start'], x['end'], lines)) for k in kinds for x in kinds[k] if x['start'] >= file_comment_span if k in ['namespace', 'section', 'end', 'infix', 'infixl', 'infixr', 'prefix', 'postfix', 'universes', 'variables', 'variable', 'user_command', 'include', 'attribute', 'theory']])
+        env_kinds = set(i['kind'] for i in kinds['commands'][0]['children'] if i['kind'] not in ['theorem', 'definition', 'abbreviation', 'instance', 'structure', 'inductive', 'class', 'class_inductive'])
+        proving_environment = sorted([(x['start'], x['end'], x['kind'], get_fraction(x['start'], x['end'], lines)) for k in kinds for x in kinds[k] if x['start'] >= file_comment_span if k in env_kinds])
 
         mdocs = kinds['mdoc'][0]['value'].replace('\r','').replace('> THIS FILE IS SYNCHRONIZED WITH MATHLIB4.\n> Any changes to this file require a corresponding PR to mathlib4.','') if 'mdoc' in kinds else None
 
@@ -1246,18 +1302,19 @@ class lean_file_analyser:
     
     
     @classmethod
-    def get_dependency_graph_within_file(cls, decls, file, proving_environment, lemmas, decl_fields):
-        def position_to_decl(line, column):
+    def get_dependency_graph_within_file(cls, all_decls, filename, proving_environment, lemmas, decl_fields):
+        def position_to_decl(line, column, full_id=None):
+            if full_id is not None and full_id in decls:
+                return full_id, decls[full_id]
             if len(result := {
                 k : v 
                 for k, v in decls.items() 
-                if 'start' in v and 'end' in v and v['local_filename'] == str(file) and v['start'] <= [line, column] < v['end'] and k not in appended_fields
+                if 'start' in v and 'end' in v and v['filename'] == filename and v['start'] <= [line, column] < v['end'] and k not in appended_fields
                 }) == 1:
                 return list(result.items())[0]
-            elif len(result := {
+            if len(result := {
                 f"{kind}_{start_line}_{start_column}_{end_line}_{end_column}" : 
-                {'filename': cut_path(file), 
-                 'local_filename': file, 
+                {'filename': filename, 
                  'kind': kind, 
                  'start': [start_line, start_column], 
                  'end': [end_line, end_column], 
@@ -1266,15 +1323,14 @@ class lean_file_analyser:
                  if (start_line, start_column) <= (line, column) <= (end_line, end_column)
                  }) == 1:
                 return list(result.items())[0]
-            else:
-                raise ValueError
+            raise ValueError
         
         appended_fields = [j for k, v in decl_fields.items() for j in v if j != k]
         graph = nx.DiGraph()
         for line, column, item in lemmas:
-            if item['source']['file'] is not None:
-                continue
-            head, head_info = position_to_decl(item['source']['line'], item['source']['column'])
+            if 'full_id' in decls and decls[item['full_id']]['filename'] != cut_path(item['source']['file']):
+                print()
+            head, head_info = position_to_decl(item['source']['line'], item['source']['column'], full_id=item['full_id'])
             graph.add_node(head, **head_info)
             tail, tail_info = position_to_decl(line, column)
             graph.add_node(tail, **tail_info)
@@ -1285,7 +1341,6 @@ class lean_file_analyser:
             #     continue
         return graph
         
-    
     @classmethod
     def main(cls, decls, file, debug=False):
         with open(file, 'r') as f:

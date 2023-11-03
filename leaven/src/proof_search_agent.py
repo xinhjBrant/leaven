@@ -106,7 +106,7 @@ class ProvingSearchAgent:
         """
         if self.server is None:
             self.server = LeanEnv()
-        results = self.server.verify_lean_file(pre_lines + context + post_lines)
+        results = self.server.verify_lean_file(pre_lines + context + post_lines, check_span=(len(pre_lines), len(pre_lines) + len(context)))
         assert pre_lines in results['context'] and post_lines in results['context']
         core_context = results['context'][len(pre_lines):-len(post_lines) if len(post_lines) > 0 else len(results['context'])]
         results.update({'core_context': core_context,

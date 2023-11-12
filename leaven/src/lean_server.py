@@ -718,7 +718,7 @@ class LeanEnv:
         return positions[:-1]
     
     def render_all(self, filename, full_context, again=False, check_span=None):
-        decl_text = full_context
+        full_context = re.sub(r'by\s+sorry\s+', 'by { sorry } ', full_context)
         outputs = None
         search_flag = check_span[0] if check_span is not None else 0
         pattern = re.compile(r'\s*repeat\s*\{\s*sorry\b|by\s+sorry\b|\s*\bsorry\b')
@@ -729,7 +729,6 @@ class LeanEnv:
             for pos in positions:
                 if (output := self.render(options={"filename" : filename, "line" : pos[0], "col" : pos[1]})) and output.state:
                     if output.state == 'no goals':
-                        # decl_text = full_context[ : search.start()] + full_context[search.end() : ]
                         if outputs is None:
                             outputs = []
                     elif outputs is None:
@@ -744,7 +743,7 @@ class LeanEnv:
                 else:
                     raise LeanServerNoInfoError(f"Lean server returns no information at line {pos[0]}, column {pos[1]} in the following content:\n{full_context}")
             assert outputs is not None, full_context
-        return outputs, decl_text
+        return outputs, full_context
 
     def close(self):
         if self.lean_server:

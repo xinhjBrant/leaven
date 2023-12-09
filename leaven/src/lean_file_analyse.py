@@ -411,26 +411,12 @@ def parse_export(decls, path=None, only_path=False):
                 # 'docs_link': f'{site_root}{filename.url}#{decl_name}'
                 }
 
-    def mk_export_db(file_map):
-        export_db = {}
-        for _, decls in file_map.items():
-            if only_path and decls[0]['filename'] not in file_list:
-                continue
-            for obj in decls:
-                export_db[obj['name']] = mk_export_map_entry(obj['name'], obj['filename'], obj['kind'], obj['is_meta'], obj['line'], obj['args'], obj['type'], obj['doc_string'], obj['attributes'])
-                # export_db[obj['name']]['decl_header_html'] = env.get_template('decl_header.j2').render(decl=obj)
-                for (cstr_name, tp) in obj['constructors']:
-                    export_db[cstr_name] = mk_export_map_entry(cstr_name, obj['filename'], obj['kind'], obj['is_meta'], obj['line'], [], tp, obj['doc_string'], obj['attributes'])
-                for (sf_name, tp) in obj['structure_fields']:
-                    export_db[sf_name] = mk_export_map_entry(sf_name, obj['filename'],  obj['kind'], obj['is_meta'], obj['line'], [], tp, obj['doc_string'], obj['attributes'])
-        return export_db
-
     file_map, loc_map = separate_results(decls['decls'])
-    for entry in decls['tactic_docs']:
-        if len(entry['tags']) == 0:
-            entry['tags'] = ['untagged']
+    # for entry in decls['tactic_docs']:
+    #     if len(entry['tags']) == 0:
+    #         entry['tags'] = ['untagged']
 
-    mod_docs = {f: docs for f, docs in decls['mod_docs'].items()}
+    # mod_docs = {f: docs for f, docs in decls['mod_docs'].items()}
     # # ensure the key is present for `default.lean` modules with no declarations
     # for i_name in mod_docs:
     #     if 'export_json' in i_name:
@@ -438,7 +424,21 @@ def parse_export(decls, path=None, only_path=False):
     #     file_map[i_name]
 
     # return file_map, loc_map, decls['notes'], mod_docs, decls['instances'], decls['instances_for'], decls['tactic_docs']
-    return mk_export_db(file_map), file_map, loc_map, decls['notes'], mod_docs, decls['instances'], decls['instances_for'], decls['tactic_docs']
+    export_db = {}
+    appended_fields = []
+    for _, decls in file_map.items():
+        if only_path and decls[0]['filename'] not in file_list:
+            continue
+        for obj in decls:
+            export_db[obj['name']] = mk_export_map_entry(obj['name'], obj['filename'], obj['kind'], obj['is_meta'], obj['line'], obj['args'], obj['type'], obj['doc_string'], obj['attributes'])
+            # export_db[obj['name']]['decl_header_html'] = env.get_template('decl_header.j2').render(decl=obj)
+            for (cstr_name, tp) in obj['constructors']:
+                export_db[cstr_name] = mk_export_map_entry(cstr_name, obj['filename'], obj['kind'], obj['is_meta'], obj['line'], [], tp, obj['doc_string'], obj['attributes'])
+                appended_fields.append(cstr_name)
+            for (sf_name, tp) in obj['structure_fields']:
+                export_db[sf_name] = mk_export_map_entry(sf_name, obj['filename'],  obj['kind'], obj['is_meta'], obj['line'], [], tp, obj['doc_string'], obj['attributes'])
+                appended_fields.append(sf_name)
+    return export_db, appended_fields, decls
 
 def parsing_file(filename, decls):
     decl_pos = []
@@ -500,6 +500,7 @@ def get_decl_info(path, only_path=False, max_memory_limit=102400):
     load_file_list = []
     for file in file_list:
         file_cut = cut_path(file)
+        assert file_cut is not None
         load_file_list.append(file_cut)
     with open(src_path / 'entrypoint.lean', 'w') as f:
         f.write('\n'.join([f'import {i}' for i in load_file_list] + \
@@ -679,7 +680,7 @@ def simplify_environment(decl_list, proving_environment):
         return item[3][item[3].find(item[2]) + len(item[2]) : ].strip()
     
     commands = sorted([[item['start'], item['end'], item['kind'], item['source']] if 'start' in item else [[item['line'], 0], calculate_end_position(item['source'], item['line'], 0), item['kind'], item['source']] for item in decl_list], key=lambda x : x[ : 2])
-    commands = sorted(commands + [item for item in proving_environment if item[1] <= commands[-1][0] or item[2] in ['namespace', 'section', 'end']], key=lambda x : x[ : 2])
+    commands = sorted(commands + [list(item) for item in proving_environment if (item[1] <= commands[-1][0] or item[2] in ['namespace', 'section', 'end']) and not any(c[0] <= item[0] and item[1] <= c[1] for c in commands)], key=lambda x : x[ : 2])
     stack = []
     closed_local_names = []
     for item in commands:
@@ -693,7 +694,7 @@ def simplify_environment(decl_list, proving_environment):
                             closed_local_names.append(last_name)
                     stack = stack[ : j]
                     break
-                elif stack[j][2] in ['axiom', 'theorem', 'def', 'inductive', 'structure', 'constant']:
+                elif stack[j][2] in ['def', 'constant', 'axiom', 'theorem', 'definition', 'structure', 'inductive', 'class', 'abbreviation', 'instance', 'class_inductive', 'run_cmd', 'user_command', 'attribute']:
                     stack.append(item)
                     break
         elif item[2] == 'open' and (open_name := get_name(item)) in closed_local_names:
@@ -709,7 +710,7 @@ def get_fraction(start, end, lines):
     else:
         return lines[start[0] - 1][start[1] : end[1]]
 
-def parse_lean_file(file, decls, lines=None, debug=False):
+def parse_lean_file(file, decls, appended_fields, lines=None, debug=False):
     def get_instance_name(ast):
         if not 'children' in ast and ast['kind'] in ['ident', 'notation'] and ast['value']:
             if isinstance(ast['value'], list):
@@ -737,13 +738,17 @@ def parse_lean_file(file, decls, lines=None, debug=False):
             if 'children' in item:
                 # deps.extend([(i, j) for j in item['children']])
                 item['children'] = [all_asts[i] for i in item['children'] if i is not None]
-            if 'kind' in item and \
-                ('start' not in item or len(lines[item['start'][0] - 1]) >= item['start'][1]) and \
-                ('end' not in item or len(lines[item['end'][0] - 1]) >= item['end'][1]):
+            if 'kind' in item:
                 if item['kind'] not in kinds:
                     kinds[item['kind']] = []
-                kinds[item['kind']].append(item)            
+                kinds[item['kind']].append(item)
         return kinds
+    
+    def get_before_lines(item, lines):
+        return ''.join(lines[ : item['start'][0] - 1]) + lines[item['start'][0] - 1][ : item['start'][1]]
+    
+    def get_after_lines(item, lines):
+        return (lines[item['start'][0] - 1][item['start'][1] : ] + ''.join(lines[item['start'][0] : ]))
     
     def get_content(all_asts, lines, start_pos = [0,0]):
         local_start_pos = None
@@ -751,14 +756,25 @@ def parse_lean_file(file, decls, lines=None, debug=False):
         for item in all_asts:
             if item is None or (item['start'] is not None and item['start'] < start_pos):
                 continue
-            if item['kind'] in ['ident', 'notation', 'nat']:
+            if item['kind'] in ['ident', 'notation', 'nat', 'string']:
                 if ('content' not in item or not item['content']) and 'value' in item and item['end'][0] == item['start'][0]:
                     if isinstance(item['value'], list):
-                        item['end'][1] = max(item['start'][1] + len('.'.join(item['value'])), item['end'][1])
-                    if item['kind'] == 'nat':
-                        item['end'][1] = max(item['start'][1] + len(item['value']), item['end'][1])
-                    else:
-                        item['end'][1] = max(item['start'][1] + len(item['value']), item['end'][1])
+                        item['value'] = '.'.join(item['value'])
+                    item['value'] = item['value'].replace('\r', '')
+                    after_lines = get_after_lines(item, lines)
+                    if not after_lines.startswith(item['value']) and not after_lines[1 : ].startswith(item['value']) and repr(item['value'].replace('\r', ''))[1:-1] in after_lines:
+                        item['value'] = repr(item['value'])[1:-1]
+                    if get_fraction(item['start'], item['end'], lines) != item['value']:
+                        if get_after_lines({**item, **{'start' : [item['start'][0], item['start'][1] - 1]}}, lines).startswith(item['value']):
+                            item['start'][1] -= 1
+                        elif get_after_lines({**item, **{'start' : [item['start'][0], item['start'][1] + 1]}}, lines).startswith(item['value']):
+                            item['start'][1] += 1
+                    before_lines = get_before_lines(item, lines)
+                    after_lines = get_after_lines(item, lines)
+                    if (after_lines.startswith(item['value']) or (item['kind'] == 'string' and item['value'] in after_lines)) and (value_end := calculate_end_position(before_lines + after_lines[ : after_lines.find(item['value']) + len(item['value'])], 1, 0)) > item['end']:
+                        item['end'] = value_end
+                        if item['kind'] == 'string' and not get_fraction(item['start'], item['end'], lines).endswith('"') and (lines[item['end'][0] - 1][item['end'][1] : ] + ''.join(lines[item['end'][0] : ])).startswith('"'):
+                            item['end'] = calculate_end_position('"', *item['end'])
             if 'children' in item and any(i for i in item['children'] if i is not None):
                 child_start_pos, child_end_pos = get_content(item['children'], lines, start_pos)
                 if child_start_pos is None or child_end_pos is None:
@@ -804,122 +820,56 @@ def parse_lean_file(file, decls, lines=None, debug=False):
         file_comment_span = [0,0]
     kinds = folding_ast(all_asts, lines)
     get_content(all_asts, lines, file_comment_span)
-    decl_fields = {}
     decl_asts = {}
     # all_decl_names = set()
     # next_comment_regex = re.compile(r'\/-(?:[^-]|-[^\/])*-\/|--[^\n]*\n')
-    env_kinds = set(i['kind'] for i in kinds['commands'][0]['children'] if i['kind'] not in ['theorem', 'definition', 'structure', 'inductive', 'class', 'class_inductive', 'abbreviation', 'instance', 'mdoc'])
-    decl_blocks = [((1,0),)] + sorted(list(set((tuple(i['start']), tuple(i['end'])) for i in kinds['commands'][0]['children'] if i['kind'] in ['theorem', 'definition', 'structure', 'inductive', 'class', 'class_inductive', 'abbreviation', 'instance', 'mdoc'] or i['kind'] in env_kinds))) + [((len(lines), len(lines[-1])),)]
-    left_blocks = [(list(decl_blocks[i][-1]), list(decl_blocks[i + 1][0]), m.split()[0], m) for i in range(len(decl_blocks) - 1) if decl_blocks[i][-1] != decl_blocks[i + 1][0] and (m := get_fraction(decl_blocks[i][-1], decl_blocks[i + 1][0], lines)).strip() and ('mdoc' not in kinds or kinds['mdoc'][0]['value'].replace('\r','').strip() not in m)]
-    private_decls = [(ast['start'], ast['end'], ast['kind'], get_fraction(ast['start'], ast['end'], lines)) for ast in kinds['commands'][0]['children'] if ast['kind'] in ['theorem', 'definition', 'structure', 'inductive', 'class', 'abbreviation', 'instance', 'class_inductive'] and ast['children'][0] and 'private' in [i['kind'] for i in ast['children'][0]['children'] if i]]
-    proving_environment = sorted(private_decls + left_blocks + [(x['start'], x['end'], x['kind'], get_fraction(x['start'], x['end'], lines)) for x in kinds['commands'][0]['children'] if x['start'] >= file_comment_span if x['kind'] in env_kinds])
 
+    proving_environment = sorted([(x['start'], x['end'], x['kind'], get_fraction(x['start'], x['end'], lines)) for x in kinds['commands'][0]['children'] if x['start'] >= file_comment_span if x['kind'] in ['namespace', 'end', 'section']])
+    
+    gathered_asts = []
     mdocs = kinds['mdoc'][0]['value'].replace('\r','').replace('> THIS FILE IS SYNCHRONIZED WITH MATHLIB4.\n> Any changes to this file require a corresponding PR to mathlib4.','') if 'mdoc' in kinds else None
-    for ast in [i for k, v in kinds.items() if k in ['theorem', 'definition', 'structure', 'inductive', 'class', 'abbreviation', 'instance', 'class_inductive'] for i in v]:
-        if ('content' not in ast or
-            (ast['kind'] == 'definition' and 'def' not in ast['content']) or
-            (ast['kind'] == 'theorem' and 'theorem' not in ast['content'] and 'lemma' not in ast['content']) or
-            (ast['kind'] not in ['definition', 'theorem', 'abbreviation'] and ast['kind'] not in ast['content'])):
-            # ast = ast
-            continue
-        # if ast['end'][1] > 0:
-        #     next_comment = next_comment_regex.search(''.join(lines[ast['end'][0] - 1 : ]))
-        #     if next_comment and next_comment.span()[0] < len(lines[ast['end'][0] - 1]) and ast['end'][1] > next_comment.span()[0]:
-        #         ast['end'][1] = next_comment.span()[0]
-        #         ast['content'] = get_fraction(ast['start'], ast['end'], lines)
-        if (ast['children'][0] is not None and 
-            'children' in ast['children'][0] and 
-            [i for i in ast['children'][0]['children'] if i is not None and i['kind'] == 'private']):
-            continue
-        # if ast['content'].strip().endswith('.') and ast['children'][6] is not None and not ast['children'][6]['content']:
-        #     continue
-        if ast['kind'] == 'instance':
-            if ast['children'][3] is not None:
-                ast_decl_list = [get_instance_name(ast['children'][3])]
-            else:
-                ast_decl_list = [get_instance_name(ast['children'][5])]
-        elif ast['kind'] in ['structure', 'class', 'class_inductive']:
-            ast_decl_list = [ast['children'][2]['value']]
-        elif ast['kind'] in ['inductive', 'definition', 'abbreviation']:
-            if ast['children'][3]['kind'] == "mutuals":
-                ast_decl_list = [get_instance_name(i) for i in ast['children'][3]['children']]
-            else:
-                ast_decl_list = [get_instance_name(ast['children'][3])]
-        else:
-            ast_decl_list = [ast['children'][3]['value']]
-        open_namespace_and_section = [i[3][i[3].find('namespace') + len('namespace') : ].strip() for i in get_proving_environment([x for x in proving_environment if x[0] <= ast['start']]) if i[2] == 'namespace']
-        last_namespace = '.'.join(open_namespace_and_section).split('.') if open_namespace_and_section else []
-        for ast_decl in ast_decl_list:
-            if isinstance(ast_decl, list):
-                if ast_decl[0] == '_root_':
-                    ast_decl = ast_decl[1:]
-                else:
-                    ast_decl = last_namespace + ast_decl
-            else:
-                ast_decl = last_namespace + [ast_decl]
-            try:
-                if ast['kind'] == 'instance':
-                    get_decl = list(filter(lambda x : 
-                                        all(i in x.split('.') for i in ast_decl) and 
-                                        ast['start'][0] <= decls[x]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1)) and
-                                        (decls[x]['source'].strip() in ast['content'] or 
-                                            ast['content'].strip() in decls[x]['source'] or
-                                            all(i['content'].strip() in decls[x]['source'] for i in ast['children'][5:] if i is not None)), decls))
-                elif ast['kind'] in ['structure', 'class', 'class_inductive']:
-                    get_decl = list(filter(lambda x : 
-                                        x.split('.')[ : len(ast_decl) - 1] == ast_decl[ : -1] and 
-                                        ast_decl[-1] in x.split('.')[-1] and 
-                                        ast['start'][0] <= decls[x]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1)) and
-                                        (decls[x]['source'].strip() in ast['content'] or 
-                                            ast['content'].strip() in decls[x]['source'] or
-                                            all(i['content'].strip() in decls[x]['source'] for i in ast['children'][5:] if i is not None)
-                                            ), decls))
-                else:
-                    get_decl = list(filter(lambda x : 
-                                        x.split('.') == ast_decl and 
-                                        ast['start'][0] <= decls[x]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1)) and
-                                        (decls[x]['source'].strip() in ast['content'] or 
-                                            ast['content'].strip() in decls[x]['source'] or
-                                            all(i['content'].strip() in decls[x]['source'] for i in ast['children'][5:] if i is not None)), 
-                                            decls))
-                assert len(get_decl) >= 1
-            except AssertionError as e:
-                continue
-            except Exception as e:
-                raise e
-            if len(get_decl) > 1:
-                last_decl_content = decls[get_decl[0]]['source'].strip()
-                for d in get_decl[1 : ]:
-                    if not decls[d]['source'].strip() == last_decl_content:
-                        raise Exception
-            # if ast['kind'] in ['structure', 'inductive', 'class', 'class_inductive']:
-            #     if ast['children'][7] is not None:
-            #         ast['children'][7]['content'] = get_fraction(ast['children'][7]['start'], ast['end'], lines)
-            # elif ast['kind'] in ['definition', 'abbreviation'] and ast['children'][5] is not None:
-            #     ast['children'][5]['content'] = get_fraction(ast['children'][5]['start'], ast['end'], lines)
-            # else:
-            #     ast['children'][6]['content'] = get_fraction(ast['children'][6]['start'], ast['end'], lines)
-            ast['filename'] = str(file)
-            for decl in get_decl:
-                # local_proving_environment[file][decl] = [[i[2], i[3]] for i in open_namespace_and_section]
-                matched_decls = [i for i in decls if 
-                                    i.split('.')[ : len(decl.split('.')) - 1] == decl.split('.')[ : -1] and \
-                                    '.'.join(i.split('.')[len(decl.split('.')) - 1 : ]).startswith(decl.split('.')[-1]) and \
-                                        ast['start'][0] <= decls[i]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1))]
-                # last_decl_content = ''
-                assert matched_decls
-                for d in matched_decls:
-                    # last_decl_content = merge_strings(last_decl_content, decls[d]['source']) if last_decl_content else decls[d]['source']
-                    # assert ast['content'] in last_decl_content
-                    decls[d]['source'] = ast['content']
-                    decls[d]['line'] = ast['start'][0]
-                    decls[d]['start'] = ast['start']
-                    decls[d]['end'] = ast['end']
-                    decl_asts[d] = ast
-                decl_fields[decl] = matched_decls
-                # all_decl_names.append((decl, str(file)))
-                # all_decl_names.add(decl)
-    return decls, proving_environment, decl_fields, decl_asts, mdocs
+
+    traced_kinds = ['constant', 'axiom', 'theorem', 'definition', 'structure', 'inductive', 'class', 'abbreviation', 'instance', 'class_inductive', 'run_cmd', 'user_command', 'attribute']
+
+    ast_list = sorted([i for k, v in kinds.items() if k in traced_kinds for i in v if i['start'] >= file_comment_span], key=lambda x : x['start'])
+    for i in range(len(ast_list) - 1):
+        if ast_list[i]['end'] > ast_list[i+1]['start']:
+            ast_list[i]['end'] = ast_list[i+1]['start']
+            ast_list[i]['content'] = get_fraction(ast_list[i]['start'], ast_list[i]['end'], lines)
+    for ast in ast_list:
+        matched_decls = [i for i in decls if ast['start'][0] <= decls[i]['line'] <= (ast['end'][0] if ast['end'][1] > 0 else (ast['end'][0] - 1))]
+        # last_decl_content = ''
+        for d in matched_decls:
+            # last_decl_content = merge_strings(last_decl_content, decls[d]['source']) if last_decl_content else decls[d]['source']
+            # assert ast['content'] in last_decl_content
+            # assert len([i for i in matched_decls if i not in appended_fields]) == 1
+            # if 'source' in decls[d]:
+            #     if ast['kind'] == 'attribute' or decl_asts[d]['kind'] == 'attribute':
+            #         continue
+            #     else:
+            #         raise Exception
+            if (end_comment := list(re.finditer(r'\/-.*?-\/\s*', ast['content'], re.DOTALL))) and end_comment[-1].end() == len(ast['content']):
+                ast['content'] = ast['content'][ : -len(end_comment[-1].group(0))]
+                ast['end'] = calculate_end_position(ast['content'], ast['start'][0], ast['start'][1])
+            decls[d]['source'] = ast['content']
+            decls[d]['line'] = ast['start'][0]
+            decls[d]['start'] = ast['start']
+            decls[d]['end'] = ast['end']
+            decl_asts[d] = ast
+        # all_decl_names.append((decl, str(file)))
+        # all_decl_names.add(decl)
+        if matched_decls and ast not in gathered_asts:
+            gathered_asts.append(ast)
+    assert not [item for item in decls.items() if 'source' not in item[1]]
+    env_asts = [i for i in kinds['commands'][0]['children'] if i['kind'] not in traced_kinds if i['start'] >= file_comment_span]
+    # untraced_asts = [x for x in kinds['commands'][0]['children'] if x['start'] >= file_comment_span and (x['kind'] not in ['theorem', 'definition', 'structure', 'inductive', 'class', 'class_inductive', 'abbreviation', 'instance', 'mdoc'] or x not in gathered_asts)]
+    decl_blocks = [((1,0),)] + sorted(list(set((tuple(i['start']), tuple(i['end'])) for i in ast_list + env_asts))) + [((len(lines), len(lines[-1])),)]
+    proving_environment = sorted([
+        (list(decl_blocks[i][-1]), list(decl_blocks[i + 1][0]), m.split()[0], m) 
+        for i in range(len(decl_blocks) - 1) 
+        if decl_blocks[i][-1] != decl_blocks[i + 1][0] and (m := get_fraction(decl_blocks[i][-1], decl_blocks[i + 1][0], lines)).strip() and ('mdoc' not in kinds or kinds['mdoc'][0]['value'].replace('\r','').strip() not in m)
+        ] + [(x['start'], x['end'], x['kind'], get_fraction(x['start'], x['end'], lines)) for x in ast_list + env_asts if x not in gathered_asts])
+    return decls, proving_environment, decl_asts, mdocs
 
 # @classmethod
 # def get_ast(file, lines=None, build_graph=False):
@@ -1114,9 +1064,9 @@ def position_to_decl(decls, proving_environment, appended_fields, filename, line
             if (start_line, start_column) <= (line, column) <= (end_line, end_column)
             }) == 1:
         return list(result.items())[0]
-    raise ValueError
+    return None
 
-def get_dependency_graph_within_file(lines, all_decls, file, proving_environment, all_info, decl_fields):
+def get_dependency_graph_within_file(lines, all_decls, file, proving_environment, all_info, appended_fields):
     def get_length_of_substring(lines, start_line, start_column, end_line, end_column):
         if start_line == end_line:
             return end_column - start_column
@@ -1128,34 +1078,46 @@ def get_dependency_graph_within_file(lines, all_decls, file, proving_environment
 
     filename = cut_path(file)
     file = str(file)
-    appended_fields = [j for k, v in decl_fields.items() for j in v if j != k]
     decls = all_decls[filename]
     graph = nx.MultiDiGraph()
+    for decl in decls:
+        graph.add_node(decl, **decls[decl])
     for line, _item in all_info.items():
         for column, item in _item.items():
             if 'source' not in item or not item['source']:
                 continue
             if item['source']['file'] is not None and item['source']['file'] != file:
-                if item['full_id'] in decls:
-                    assert decls[item['full_id']]['start'] <= [item['source']['line'], item['source']['column']] < decls[item['full_id']]['end']
+                if item['full_id'] in decls and decls[item['full_id']]['start'] <= [item['source']['line'], item['source']['column']] < decls[item['full_id']]['end']:
                     item['source']['file'] = None
                 else:
                     continue
+            tail_result = position_to_decl(decls, proving_environment, appended_fields, filename, line, column)
+            if tail_result is None:
+                continue
+            else:
+                tail, tail_info = tail_result
             head, head_info = position_to_decl(decls, proving_environment, appended_fields, filename, item['source']['line'], item['source']['column'], full_id=item['full_id'])
-            graph.add_node(head, **head_info)
-            tail, tail_info = position_to_decl(decls, proving_environment, appended_fields, filename, line, column)
-            graph.add_node(tail, **tail_info)
+            if head not in graph.nodes:
+                if head in appended_fields:
+                    head, head_info = appended_fields(head), decls[appended_fields(head)]
+                graph.add_node(head, **head_info)
+            if tail not in graph.nodes:
+                if tail in appended_fields:
+                    tail, tail_info = appended_fields(tail), decls[appended_fields(tail)]
+                graph.add_node(tail, **tail_info)
             graph.add_edge(head, tail, pos=(line, column))
+            assert graph.nodes[tail]['start'] <= [line, column] < graph.nodes[tail]['end']
+    for i, (start, end, tp, content) in enumerate(proving_environment):
+        if tp == 'user_command' and (m := re.match(r'\s*open_locale\s+(.*)\s*$', content)):
+            tail, tail_info = f"{tp}_{start[0]}_{start[1]}_{end[0]}_{end[1]}", {'filename': filename, 'kind': tp, 'start': start, 'end': end, 'source': content} 
+            dep_localized = []
+            for j, (start_, end_, tp_, content_) in enumerate(proving_environment[ : i]):
+                if tp_ == 'user_command' and (m_ := re.match(r'\s*localized\s+".*?"\s+in\s+(.*)\s*$', content)) and m.group(1) == m_.group(1):
+                    dep_localized.append(proving_environment[j])
+            for start_, end_, tp_, content_ in dep_localized:
+                head, head_info = f"{tp_}_{start_[0]}_{start_[1]}_{end_[0]}_{end_[1]}", {'filename': filename, 'kind': tp_, 'start': start_, 'end': end, 'source': content_}
+                graph.add_node(head, **head_info)
+                graph.add_node(tail, **tail_info)
+                graph.add_edge(head, tail, pos=(*start,))
+                assert graph.nodes[tail]['start'] <= start < graph.nodes[tail]['end']
     return graph
-    
-def lean_file_analyse(decls, file, debug=False):
-    with open(file, 'r') as f:
-        lines = f.readlines()
-    if lines[-1].endswith('\n'):
-        lines.append('')
-    # with open(f'temp/mathlib_dataset/{cut_path(file)}_results.pickle', 'rb') as f:
-    #     result = pickle.load(f)
-    # proving_environment, all_info, decl_fields, decl_asts, mdocs = result[-5:]
-    decls, proving_environment, decl_fields, decl_asts, mdocs = parse_lean_file(file=file, decls=decls, lines=lines, debug=debug)
-    all_info = get_all_info(file=file, do_logging=False)
-    return decls, proving_environment, all_info, decl_fields, decl_asts, mdocs

@@ -10,6 +10,7 @@
         "proof_block": {
             "patterns": [
                 {
+                    "name": "proof_block",
                     "begin": "(\\|)",
                     "end": "$",
                     "soft_ending": true,
@@ -19,6 +20,9 @@
                         },
                         {
                             "include": "#paren"
+                        },
+                        {
+                            "include": "#proof_block"
                         },
                         {
                             "begin": "\\[",
@@ -34,23 +38,13 @@
                                 }
                             ],
                             "end": "\\]"
-                        },
-                        {
-                            "contentName": "proof_block",
-                            "begin": "(:=)",
-                            "end": "(?=$|\\|)",
-                            "patterns": [
-                                {
-                                    "include": "#term_block"
-                                }
-                            ]
                         }
                     ]
                 },
                 {
                     "contentName": "proof_block",
-                    "begin": "^",
-                    "end": "$",
+                    "begin": "(:=)",
+                    "end": "(?=$|\\|)",
                     "patterns": [
                         {
                             "include": "#term_block"

@@ -4,7 +4,7 @@ import subprocess
 import ujson as json
 # from tqdm import tqdm, trange
 import re
-from leaven.src.lean_server import LeanEnv
+from leaven.src.lean_server import LeanEnv, LeanServerNoInfoError
 # import pickle
 import pickle
 import networkx as nx
@@ -683,8 +683,9 @@ def simplify_environment(decl_list, proving_environment):
     commands = sorted(commands + [list(item) for item in proving_environment if (item[1] <= commands[-1][0] or item[2] in ['namespace', 'section', 'end']) and not any(c[0] <= item[0] and item[1] <= c[1] for c in commands)], key=lambda x : x[ : 2])
     stack = []
     closed_local_names = []
-    for item in commands:
-        if item[2] == 'end':
+    last_theorem_id = [i for i, item in enumerate(commands) if item[2] == 'theorem'][-1]
+    for i, item in enumerate(commands):
+        if item[2] == 'end' and i > last_theorem_id:
             for j in range(len(stack) - 1, -1, -1):
                 if stack[j][2] in ['namespace', 'section']:
                     if end_name := get_name(item):
@@ -694,12 +695,12 @@ def simplify_environment(decl_list, proving_environment):
                             closed_local_names.append(last_name)
                     stack = stack[ : j]
                     break
-                elif stack[j][2] in ['def', 'constant', 'axiom', 'theorem', 'definition', 'structure', 'inductive', 'class', 'abbreviation', 'instance', 'class_inductive', 'run_cmd', 'user_command', 'attribute']:
+                elif stack[j][2] in ['def', 'constant', 'axiom', 'theorem', 'definition', 'structure', 'inductive', 'class', 'abbreviation', 'instance', 'class_inductive', 'run_cmd', 'user_command', 'attribute', 'export', 'open']:
                     stack.append(item)
                     break
-        elif item[2] == 'open' and (open_name := get_name(item)) in closed_local_names:
-            if any(i[2] == 'end' and get_name(i) == open_name for i in stack):
-                stack.append(item)
+        # elif item[2] == 'open' and (open_name := get_name(item)) in closed_local_names:
+        #     if any(i[2] == 'end' and get_name(i) == open_name for i in stack):
+        #         stack.append(item)
         else:
             stack.append(item)
     return stack
@@ -803,8 +804,13 @@ def parse_lean_file(file, decls, appended_fields, lines=None, debug=False):
     file = Path(file).resolve()
     if not os.path.exists(file.with_suffix('.ast.json')):
         os.system(' '.join([f_join(leaven_path, 'elan', 'bin', 'lean'), "-M", "20480", "--ast", "--tsast", "--tspp -q ", str(file)]))
-    with open(file.with_suffix('.ast.json'), 'r') as f:
-        all_asts = json.load(f)['ast']
+    try:
+        with open(file.with_suffix('.ast.json'), 'r') as f:
+            all_asts = json.load(f)['ast']
+    except:
+        os.system(' '.join([f_join(leaven_path, 'elan', 'bin', 'lean'), "-M", "20480", "--ast", "--tsast", "--tspp -q ", str(file)]))
+        with open(file.with_suffix('.ast.json'), 'r') as f:
+            all_asts = json.load(f)['ast']
     if lines is None:
         with open(file, 'r') as f:
             lines = f.readlines()
@@ -976,7 +982,8 @@ def document_probing(file=None, content=None, lean_server=None, do_logging=False
                 continue
             try:
                 ts = local_lean_server.render(options={"filename" : str(file), "line" : row, "col" : column})
-            except Exception as e:
+                assert ts
+            except:
                 line_buffer += line[last_sep : column]
                 last_sep = column
                 continue

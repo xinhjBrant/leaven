@@ -4,7 +4,7 @@ with open("README.md", "r") as f:
   long_description = f.read()
 
 setup(name='leaven',
-      version='1.1.0b30',
+      version='1.1.0b32',
       license='MIT',
       description='A package bridging Python and Lean verification for proof search using language models',
       long_description=long_description,

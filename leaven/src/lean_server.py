@@ -739,9 +739,9 @@ class LeanEnv:
             if not output or output.state is None: # not output means: is None or is an empty string
                 if not again:
                     self.reset(options={"filename": filename, "content": full_context})
-                    return self.render_all(filename, full_context, True)
+                    return self.render_all(filename, full_context, True, check_span=check_span)
                 else:
-                    return LeanServerNoInfoError(f"Lean server returns no information at line {pos[0]}, column {pos[1]} in the following content:\n{full_context}")
+                    raise LeanServerNoInfoError(f"Lean server returns no information at line {pos[0]}, column {pos[1]} in the following content:\n{full_context}")
             assert outputs is not None, full_context
         return outputs, full_context
 
@@ -755,9 +755,9 @@ class LeanEnv:
         :param file_content: the content of a .lean file to verify
         """
         events = self.step(options={"filename": filename, 'content': content})
-        error =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.error][ : 5])
-        warning =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.warning][ : 5])
-        info =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.information][ : 5])
+        error =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.error])
+        warning =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.warning])
+        info =  '\n\n'.join([f"line {e.pos_line}, column {e.pos_col}: \n{e.text}" for e in events if e.severity is Severity.information])
         open_states = []
         if check_span is None or check_span[0] < check_span[1]:
             render_result = self.render_all(filename=filename, full_context=content, check_span=check_span) # get the local proof states for all keyword `sorry`
@@ -765,10 +765,10 @@ class LeanEnv:
                 if error:
                     open_states = []
                 else:
-                    raise render_result
+                    return render_result
             else:
                 open_states, content = render_result
-            open_states = [f"line {i[0]}, column {i[1]}: \n{i[2]}" for i in open_states[ : 5] if i[2] is not None] if open_states is not None else [] # proof states attached with line and column
+            open_states = [f"line {i[0]}, column {i[1]}: \n{i[2]}" for i in open_states if i[2] is not None] if open_states is not None else [] # proof states attached with line and column
         return {
             'error' : error, 'warning' : warning, 'info' : info, 'open_states' : open_states, 'context' : content
         }

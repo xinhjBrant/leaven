@@ -29,12 +29,20 @@ The library is attuned to mathlib revision `58a272265b5e05f258161260dd2c5d247213
 Part of the code in leaven/src/lean_server.py is adapted from https://github.com/leanprover-community/lean-client-python. This project uses trio to asynchronously listen to the Lean server, while I replaced the use of trio with simpler Python multithreading.
 
 ## Installation
-To install `leaven` and get all data files and dependencies, which may not be included in the GitHub repository, you should use the following command by default:
+To install `leaven` and get all data files and dependencies, which may not be included in the GitHub repository, you should first download the mathlib project from "https://github.com/leanprover-community/mathlib" to set a matched version.
 
+For the next few steps, you can refer to "https://leanprover-community.github.io/lean3/install/linux.html". Install a small tool called elan and the lean extension in VS Code. Then use pipx to install a small tool called leanproject.
+
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+source ~/.profile
+pipx install mathlibtools
+
+
+After installing Lean and mathlib all above,  use the following command by default:
 ```
 pip install leaven
 ```
-
 Or you can download the whole project from https://github.com/xinhjBrant/leaven/releases/download/release/leaven.tar.gz
 
 ## Components
